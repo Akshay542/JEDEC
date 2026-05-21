@@ -1,0 +1,13 @@
+# Database (local data, do not commit)
+jedec_projects.db
+
+# Archives
+*.zip
+
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
