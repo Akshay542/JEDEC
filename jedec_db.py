@@ -37,6 +37,7 @@ def init_db():
             project_id  INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
             ltpd        REAL    DEFAULT 5.0,
             failures    INTEGER DEFAULT 0,
+            confidence  REAL    DEFAULT 0.90,
             updated_at  TEXT    DEFAULT (datetime('now'))
         );
 
@@ -88,6 +89,7 @@ def init_db():
         """)
         # ── Incremental migrations (safe to re-run) ──────────────────────────
         for stmt in [
+            "ALTER TABLE project_sample_size ADD COLUMN confidence REAL DEFAULT 0.90",
             "ALTER TABLE project_gantt ADD COLUMN test_key TEXT DEFAULT ''",
             "ALTER TABLE project_meta  ADD COLUMN gantt_start_date TEXT DEFAULT ''",
             """CREATE TABLE IF NOT EXISTS project_gantt_history (
@@ -180,19 +182,20 @@ def save_meta(pid: int, **kwargs):
 def get_sample_size(pid: int) -> dict:
     with _conn() as con:
         row = con.execute(
-            "SELECT ltpd, failures FROM project_sample_size WHERE project_id=?", (pid,)
+            "SELECT ltpd, failures, confidence FROM project_sample_size WHERE project_id=?", (pid,)
         ).fetchone()
-        return dict(row) if row else {"ltpd": 5.0, "failures": 0}
+        return dict(row) if row else {"ltpd": 5.0, "failures": 0, "confidence": 0.90}
 
-def save_sample_size(pid: int, ltpd: float, failures: int):
+def save_sample_size(pid: int, ltpd: float, failures: int, confidence: float = 0.90):
     with _conn() as con:
         con.execute("""
-            INSERT INTO project_sample_size (project_id, ltpd, failures, updated_at)
-            VALUES (?,?,?,datetime('now'))
+            INSERT INTO project_sample_size (project_id, ltpd, failures, confidence, updated_at)
+            VALUES (?,?,?,?,datetime('now'))
             ON CONFLICT(project_id) DO UPDATE SET
                 ltpd=excluded.ltpd, failures=excluded.failures,
+                confidence=excluded.confidence,
                 updated_at=excluded.updated_at
-        """, (pid, ltpd, failures))
+        """, (pid, ltpd, failures, confidence))
         _touch(con, pid)
 
 # ── Pass / Fail ────────────────────────────────────────────────────────────────

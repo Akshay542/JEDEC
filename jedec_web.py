@@ -1504,9 +1504,13 @@ class ReportHandler(Base):
             corrected = False
             if not is_char:
                 # Compute reliability stats whenever test is in-progress or complete
+                # Use project-specific LTPD and confidence if injected by ProjectReportHandler
+                _conf = getattr(self, "_qual_confidence", 0.90)
+                _ltpd = getattr(self, "_qual_ltpd", 5.0)
+                _r_req = 1.0 - _ltpd / 100.0
                 if sc in ("co", "ip") and n_val:
-                    r_demo    = demonstrated_reliability(n_val, k_val, 0.90)
-                    stat_pass, _ = _pf(n_val, k_val, 0.90, 0.95)
+                    r_demo    = demonstrated_reliability(n_val, k_val, _conf)
+                    stat_pass, _ = _pf(n_val, k_val, _conf, _r_req)
 
             entries.append({
                 "key": key, "test": t, "sc": sc, "status": label,
@@ -1593,6 +1597,8 @@ class ReportHandler(Base):
 
                 samples[key] = samples_for_test
 
+        _r_conf = getattr(self, "_qual_confidence", 0.90)
+        _r_ltpd = getattr(self, "_qual_ltpd", 5.0)
         report = {
             "customer": customer, "product": product,
             "author": author, "part_type": pt,
@@ -1601,6 +1607,10 @@ class ReportHandler(Base):
             "date": datetime.now().strftime("%B %d, %Y"),
             "entries": entries,
             "samples": samples,
+            # Project qualification criteria (from Planner)
+            "qual_ltpd":       _r_ltpd,
+            "qual_confidence": _r_conf,
+            "qual_r_req":      1.0 - _r_ltpd / 100.0,
             # Counts: pass/fail derived from stat_pass when status is Complete
             "n_pass": sum(1 for e in entries if e["sc"] == "co" and e.get("stat_pass") is True),
             "n_fail": sum(1 for e in entries if e["sc"] == "co" and e.get("stat_pass") is False),
@@ -1622,10 +1632,17 @@ class ReportHandler(Base):
         if saved_counts is None:
             saved_counts = getattr(self, "_saved_n", {})
 
-        # Pre-compute min sample sizes for k=0..20 failures at 95% R, 90% CL
-        # Embed as a JS array so client-side validation needs no chi-sq implementation
-        min_n_table = [min_sample_size(0.95, 0.90, k) for k in range(21)]
+        # Pre-compute min sample sizes for k=0..20 failures using project LTPD + confidence
+        # Fall back to JESD47 defaults (95% R, 90% CL) when not in a project context
+        _qual_ltpd       = getattr(self, "_qual_ltpd", 5.0)
+        _qual_confidence = getattr(self, "_qual_confidence", 0.90)
+        _r_req           = 1.0 - _qual_ltpd / 100.0
+        min_n_table = [min_sample_size(_r_req, _qual_confidence, k) for k in range(21)]
         min_n_js = str(min_n_table)
+        # Human-readable labels for JS badge tooltip
+        _ltpd_pct_js   = _qual_ltpd
+        _conf_pct_js   = round(_qual_confidence * 100, 1)
+        _r_req_pct_js  = round(_r_req * 100, 1)
 
         status_opts_html = "".join(
             f'<option value="{sc}">{lbl}</option>'
@@ -1918,9 +1935,12 @@ class ReportHandler(Base):
         </form>
 
         <script>
-        // Pre-computed min sample sizes: MIN_N[k] = min n needed to demonstrate
-        // 95% reliability at 90% CL with k failures (JEDEC chi-squared method)
+        // Pre-computed min sample sizes using project LTPD ({_ltpd_pct_js}%) and
+        // confidence ({_conf_pct_js}%): MIN_N[k] = min n to demonstrate ≤{_ltpd_pct_js}% defective
         const MIN_N = {min_n_js};
+        const QUAL_LTPD_PCT  = {_ltpd_pct_js};
+        const QUAL_CONF_PCT  = {_conf_pct_js};
+        const QUAL_R_PCT     = {_r_req_pct_js};
 
         // updatePF: compute and display automatic Pass/Fail badge from n and k inputs
         function updatePF(key) {{
@@ -1935,9 +1955,11 @@ class ReportHandler(Base):
             badge.textContent = '—';
             badge.style.background = '#f3f4f6';
             badge.style.color = '#6b7280';
+            badge.title = '';
             return;
           }}
           const minN = (k < MIN_N.length) ? MIN_N[k] : MIN_N[MIN_N.length - 1];
+          badge.title = `Need n≥${{minN}} to pass (≤${{QUAL_LTPD_PCT}}% defective @ ${{QUAL_CONF_PCT}}% CL)`;
           if (n >= minN) {{
             badge.textContent = 'PASS';
             badge.style.background = '#dcfce7';
@@ -2036,9 +2058,10 @@ class ReportHandler(Base):
                 nk = f"{e['n']} / {e['k']}" if e["n"] is not None else "—"
                 stat_cell = ""
                 if e["r_demo"] is not None:
-                    ok  = e["stat_pass"]
-                    res = "PASS" if ok else "FAIL"
-                    stat_cell = f' <small class="text-muted">({e["r_demo"]*100:.1f}% R @ 90% CL — <span class="{"text-success" if ok else "text-danger"}">{res}</span>)</small>'
+                    ok       = e["stat_pass"]
+                    res      = "PASS" if ok else "FAIL"
+                    _cl_lbl  = f'{r.get("qual_confidence", 0.90)*100:.0f}% CL'
+                    stat_cell = f' <small class="text-muted">({e["r_demo"]*100:.1f}% R @ {_cl_lbl} — <span class="{"text-success" if ok else "text-danger"}">{res}</span>)</small>'
             notes_td = f'<td class="text-muted small">{e["notes"]}</td>' if e["notes"] else '<td class="text-muted">—</td>'
             table_rows += f"""
             <tr>
@@ -2049,7 +2072,13 @@ class ReportHandler(Base):
               {notes_td}
             </tr>"""
 
-        # Statistical details
+        # Statistical details — pull project criteria from report dict
+        _q_ltpd = r.get("qual_ltpd", 5.0)
+        _q_conf = r.get("qual_confidence", 0.90)
+        _q_rreq = r.get("qual_r_req", 0.95)
+        _q_conf_lbl = f'{_q_conf*100:.0f}%'
+        _q_rreq_lbl = f'{_q_rreq*100:.0f}%'
+        _q_ltpd_lbl = f'{_q_ltpd:g}%'
         stat_entries = [e for e in r["entries"] if e["r_demo"] is not None]
         stat_section = ""
         if stat_entries:
@@ -2061,10 +2090,10 @@ class ReportHandler(Base):
                     f'<td>{e["n"]}</td><td>{e["k"]}</td>'
                     f'<td>{e["r_demo"]*100:.2f}%</td>'
                     f'<td><span class="badge {"bg-success" if ok else "bg-danger"}">'
-                    f'{"PASS" if ok else "FAIL"}</span> vs 95% @ 90% CL</td></tr>'
+                    f'{"PASS" if ok else "FAIL"}</span> vs {_q_rreq_lbl} R @ {_q_conf_lbl} CL</td></tr>'
                 )
             stat_section = f"""
-            <h6 class="text-muted mt-4 mb-2" style="font-size:.8rem;letter-spacing:.05em;text-transform:uppercase">Statistical Details (90% confidence, 95% reliability target)</h6>
+            <h6 class="text-muted mt-4 mb-2" style="font-size:.8rem;letter-spacing:.05em;text-transform:uppercase">Statistical Details ({_q_conf_lbl} confidence, {_q_rreq_lbl} reliability target — LTPD {_q_ltpd_lbl})</h6>
             <table class="table table-sm table-bordered">
               <thead class="tbl-header"><tr><th>Test</th><th>n</th><th>Failures</th><th>Demonstrated R</th><th>Result</th></tr></thead>
               <tbody>{srows}</tbody>
@@ -2540,16 +2569,22 @@ def _make_pdf(r: dict) -> bytes:
     story.append(sum_tbl)
 
     # ── 6. Statistical details ────────────────────────────────────────────────
+    _pdf_ltpd = r.get("qual_ltpd", 5.0)
+    _pdf_conf = r.get("qual_confidence", 0.90)
+    _pdf_rreq = r.get("qual_r_req", 0.95)
+    _pdf_conf_lbl = f'{_pdf_conf*100:.0f}%'
+    _pdf_rreq_lbl = f'{_pdf_rreq*100:.0f}%'
+    _pdf_ltpd_lbl = f'{_pdf_ltpd:g}%'
     stat_entries = [e for e in r["entries"] if e.get("r_demo") is not None]
     if stat_entries:
         story.append(Spacer(1, 0.5*cm))
         story.append(Paragraph(
-            "Statistical Details  (90% confidence level, 95% reliability target)", section_h))
+            f"Statistical Details  ({_pdf_conf_lbl} confidence level, {_pdf_rreq_lbl} reliability target — LTPD {_pdf_ltpd_lbl})", section_h))
         s_data = [[
             Paragraph(h, S(f"SH{j}", fontSize=9, fontName="Helvetica-Bold",
                            textColor=colors.white))
             for j, h in enumerate(["Test", "n", "Failures",
-                                    "Demonstrated R", "vs 95% Target"])
+                                    "Demonstrated R", f"vs {_pdf_rreq_lbl} Target"])
         ]]
         s_cmds = [
             ("BACKGROUND",    (0,0), (-1,0), _NAVY),
@@ -3078,7 +3113,7 @@ class ProjectSampleSizeHandler(Base):
         p = self._get_project_or_404(pid)
         if not p: return
         saved = _db.get_sample_size(int(pid))
-        self._render(p, k=saved["failures"], ltpd=saved["ltpd"])
+        self._render(p, k=saved["failures"], ltpd=saved["ltpd"], confidence=saved.get("confidence", 0.90))
 
     def post(self, pid):
         p = self._get_project_or_404(pid)
@@ -3096,19 +3131,21 @@ class ProjectSampleSizeHandler(Base):
             self._render(p)
             return
         try:
-            k    = int(self.get_argument("failures", "0"))
-            ltpd = float(self.get_argument("ltpd", "5"))
+            k          = int(self.get_argument("failures", "0"))
+            ltpd       = float(self.get_argument("ltpd", "5"))
+            confidence = float(self.get_argument("confidence", "0.90"))
             if k < 0: raise ValueError("Acceptance number C must be ≥ 0")
             if not (0.01 <= ltpd <= 99.99): raise ValueError("LTPD must be between 0.01% and 99.99%")
-            _db.save_sample_size(int(pid), ltpd, k)
+            if not (0.50 <= confidence <= 0.9999): raise ValueError("Confidence must be between 0.50 and 0.9999")
+            _db.save_sample_size(int(pid), ltpd, k, confidence)
             n_jesd47 = min_sample_size_ltpd(ltpd, k)
             r_equiv  = 1.0 - ltpd / 100.0
-            n_exact  = min_sample_size(r_equiv, 0.90, k)
-            self._render(p, k=k, ltpd=ltpd, n_jesd47=n_jesd47, n_exact=n_exact)
+            n_exact  = min_sample_size(r_equiv, confidence, k)
+            self._render(p, k=k, ltpd=ltpd, confidence=confidence, n_jesd47=n_jesd47, n_exact=n_exact)
         except Exception as e:
             self._render(p, error=str(e))
 
-    def _render(self, p, k=0, ltpd=5.0, n_jesd47=None, n_exact=None, error=None):
+    def _render(self, p, k=0, ltpd=5.0, confidence=0.90, n_jesd47=None, n_exact=None, error=None):
         pid   = p["id"]
         tests = applicable_tests(p["part_type"])
         saved_counts = _db.get_samples(int(pid))
@@ -3245,6 +3282,16 @@ class ProjectSampleSizeHandler(Base):
                              value="{ltpd}" min="0.01" max="99.99" step="0.01" required>
                       <span class="input-group-text">%</span>
                     </div>
+                    <div class="form-text" style="font-size:.7rem">Used for pass/fail in Reporting</div>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" style="font-size:.8rem">Confidence Level</label>
+                    <div class="input-group input-group-sm">
+                      <input type="number" class="form-control" name="confidence"
+                             value="{confidence}" min="0.50" max="0.9999" step="0.01" required>
+                      <span class="input-group-text">e.g. 0.90</span>
+                    </div>
+                    <div class="form-text" style="font-size:.7rem">Used for pass/fail in Reporting</div>
                   </div>
                   <div class="mb-3">
                     <label class="form-label" style="font-size:.8rem">Acceptance Number (C)</label>
@@ -3256,8 +3303,8 @@ class ProjectSampleSizeHandler(Base):
                 </form>
                 <hr class="my-3">
                 <p class="text-muted mb-0" style="font-size:.7rem">
-                  90% confidence fixed per JESD47I.<br>
-                  LTPD 5% ≡ R = 95%.
+                  LTPD 5% ≡ R = 95%. Confidence and LTPD
+                  are applied when evaluating pass/fail in the Reporting tab.
                 </p>
               </div>
             </div>
@@ -3347,6 +3394,10 @@ class ProjectReportHandler(ReportHandler):
         s["part_type"] = p["part_type"]
         # Inject saved planner sample counts so _render_form can use them as n defaults
         self._saved_n = _db.get_samples(int(pid))
+        # Inject project LTPD + confidence so pass/fail in the form uses project settings
+        _qual = _db.get_sample_size(int(pid))
+        self._qual_ltpd       = _qual.get("ltpd", 5.0)
+        self._qual_confidence = _qual.get("confidence", 0.90)
         # Make the form POST back to the project-scoped URL (not the standalone /report)
         self._form_action = f"/projects/{pid}/report"
         captured = {}
@@ -3365,6 +3416,10 @@ class ProjectReportHandler(ReportHandler):
         if not p: return
         _, s = self.sess()
         s["part_type"] = p["part_type"]
+        # Inject project LTPD + confidence so ReportHandler.post uses them for pass/fail
+        _qual = _db.get_sample_size(int(pid))
+        self._qual_ltpd       = _qual.get("ltpd", 5.0)
+        self._qual_confidence = _qual.get("confidence", 0.90)
         # Delegate to existing ReportHandler.post which builds report dict and stores in session
         captured = {}
         def _capture(body, title="", active="", project=None, active_sub=""):
