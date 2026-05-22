@@ -958,13 +958,11 @@ class LookupHandler(Base):
                 <div id="requal-ttv" class="accordion-collapse collapse" data-bs-parent="#requal-acc">
                   <div class="accordion-body py-2 px-3">
                     <ol class="mb-0 ps-3" style="font-size:.83rem; line-height:1.7">
-                      <li>Wafer Diameter Change</li>
+                      <li>New TTV (PCB, layout, solder)</li>
                       <li><strong>Metallization:</strong> New materials or a significant change in composition</li>
-                      <li><strong>Wafer Backside Operation:</strong> Metal composition, design rules, process and/or technique</li>
-                      <li><strong>Die Coating:</strong> Material, process, and/or technique</li>
                       <li><strong>Bonding:</strong> Process and/or technique</li>
-                      <li>Die Thickness</li>
-                      <li><strong>Package Dimension Change:</strong> Larger package body size or reduction in lead or solder ball pitch</li>
+                      <li>Die thickness</li>
+                      <li>SCD thickness</li>
                     </ol>
                   </div>
                 </div>
