@@ -163,6 +163,15 @@ PC_METHODS = [
     ("Variable Power / Variable Cooling",  "Most flexible but most complex; best for devices with complex chip power maps"),
 ]
 
+# ── PTC condition table (JESD22-A105D Table 1) ───────────────────────────────
+# tmin/tmax: temperature extremes °C (tolerances: tmin +0/−10, tmax +10/−0)
+# trans_min: max transition time between extremes (minutes)
+# dwell_min: min dwell time at each extreme (minutes)
+PTC_CONDITIONS = {
+    "A": {"tmin": -40, "tmax":  85, "tmin_tol": "(+0, −10)", "tmax_tol": "(+10, −0)", "trans_min": 20, "dwell_min": 10},
+    "B": {"tmin": -40, "tmax": 125, "tmin_tol": "(+0, −10)", "tmax_tol": "(+10, −0)", "trans_min": 30, "dwell_min": 10},
+}
+
 # ── HTS condition table (JESD22-A103D Table 1) ────────────────────────────────
 # temp_c: storage temperature °C; tolerance −0/+10°C
 # JESD47 default duration: 1000 hours at Condition B
@@ -631,6 +640,7 @@ class LookupHandler(Base):
         vib_ran_js_data = _json.dumps(VIB_RAN_CONDITIONS)
         pc_js_data      = _json.dumps(PC_CONDITIONS)
         pc_method_js    = _json.dumps([{"label": m[0], "desc": m[1]} for m in PC_METHODS])
+        ptc_js_data     = _json.dumps(PTC_CONDITIONS)
         hts_js_data     = _json.dumps(HTS_CONDITIONS)
 
         rows = ""
@@ -865,6 +875,33 @@ class LookupHandler(Base):
                     </div>
                   </div>
                 </td>"""
+            elif key == "ptc":
+                ptc_opts = "".join(
+                    f'<option value="{ltr}"{"  selected" if ltr == "A" else ""}>'
+                    f'Condition {ltr} &nbsp;({v["tmin"]:+d}°C to {v["tmax"]:+d}°C, {v["trans_min"]} min transition)'
+                    f'</option>'
+                    for ltr, v in PTC_CONDITIONS.items()
+                )
+                condition_cell = f"""<td>
+                  <select id="ptc-cond-sel" class="form-select form-select-sm mb-2"
+                          style="max-width:340px" onchange="updatePtcCond(this.value)">
+                    {ptc_opts}
+                  </select>
+                  <div style="font-size:.82rem;line-height:1.7">
+                    <span id="ptc-label" class="fw-semibold">−40°C to +85°C</span>
+                    &nbsp;<span class="text-muted">(Condition <span id="ptc-ltr">A</span>)</span><br>
+                    <span class="text-muted">T<sub>min</sub>:</span>
+                    <span id="ptc-tmin">−40°C <span class="text-muted">(+0, −10)</span></span>
+                    &ensp;|&ensp;
+                    <span class="text-muted">T<sub>max</sub>:</span>
+                    <span id="ptc-tmax">+85°C <span class="text-muted">(+10, −0)</span></span><br>
+                    <span class="text-muted">Transition time (max):</span>
+                    <span id="ptc-trans">20 minutes</span>
+                    &ensp;|&ensp;
+                    <span class="text-muted">Dwell time (min):</span>
+                    <span id="ptc-dwell">10 minutes</span>
+                  </div>
+                </td>"""
             else:
                 condition_cell = f"<td>{t['condition']}</td>"
 
@@ -1036,6 +1073,7 @@ class LookupHandler(Base):
         const VIB_RAN_DATA  = {vib_ran_js_data};
         const PC_DATA       = {pc_js_data};
         const PC_METHODS    = {pc_method_js};
+        const PTC_DATA      = {ptc_js_data};
         const HTS_DATA      = {hts_js_data};
 
         function fmtTemp(v) {{
@@ -1111,6 +1149,17 @@ class LookupHandler(Base):
           const m = PC_METHODS[parseInt(idx)];
           if (!m) return;
           document.getElementById("pc-method-desc").innerHTML = m.desc;
+        }}
+
+        function updatePtcCond(ltr) {{
+          const c = PTC_DATA[ltr];
+          if (!c) return;
+          document.getElementById("ptc-ltr").textContent   = ltr;
+          document.getElementById("ptc-label").textContent = c.tmin + "\u00b0C to +" + c.tmax + "\u00b0C";
+          document.getElementById("ptc-tmin").innerHTML    = c.tmin + "\u00b0C <span class='text-muted'>" + c.tmin_tol + "</span>";
+          document.getElementById("ptc-tmax").innerHTML    = "+" + c.tmax + "\u00b0C <span class='text-muted'>" + c.tmax_tol + "</span>";
+          document.getElementById("ptc-trans").textContent = c.trans_min + " minutes";
+          document.getElementById("ptc-dwell").textContent = c.dwell_min + " minutes";
         }}
 
         function switchVibType(type) {{
