@@ -44,23 +44,33 @@ BOND_TYPES     = ["Cu TCB", "Ag Sinter", "Ag TCB"]
 CSAM_THRESHOLD = 95.0
 
 # ── JEDEC spec document URLs — served locally from /specs/ ────────────────────
-SPEC_URLS = {
-    "uhast":       "/specs/JESD22-A118B.pdf",
-    "tc":          "/specs/JESD22-A104F.pdf",
-    "tshock":      "/specs/JESD22-A106B.pdf",
-    "mshock":      "/specs/JESD22-B110B.pdf",
-    "vib":         "/specs/JESD22-B103B.pdf",
-    "pc":          "/specs/JESD22-A122.pdf",
-    "ptc":         "/specs/JESD22-A105D.pdf",
-    "hts":         "/specs/JESD22-A103D.pdf",
-    "shadow_moire":"/specs/JESD22-B112C.pdf",
-    "htol":        "/specs/JESD22-A108G.pdf",
-    "elfr":        "/specs/JESD74A.pdf",
-    "thb":         "/specs/JESD22-A110.pdf",
-    "esd_cdm":     "/specs/JS-002.pdf",
-    "esd_hbm":     "/specs/JS-001.pdf",
-    "latchup":     "/specs/JESD78E.pdf",
-    "jesd47":      "/specs/JESD47I.pdf",
+# Each entry is a list of (label, url) pairs so tests with multiple standards
+# can link each document individually.
+# Files marked TODO are not yet in the specs/ folder — add them to enable the link.
+SPEC_URLS: dict[str, list[tuple[str, str]]] = {
+    "uhast":       [("JESD22-A118B",  "/specs/JESD22-A118B.pdf")],
+    "tc":          [("JESD22-A104F",  "/specs/JESD22-A104F.pdf")],
+    "tshock":      [("JESD22-A106B",  "/specs/JESD22-A106B.pdf")],
+    "mshock":      [("JESD22-B110B",  "/specs/JESD22-B110B.pdf")],
+    "vib":         [("JESD22-B103B",  "/specs/JESD22-B103B.pdf")],
+    "pc":          [("JESD22-A122",   "/specs/JESD22-A122.pdf")],
+    "ptc":         [("JESD22-A105D",  "/specs/JESD22-A105D.pdf")],
+    "hts":         [("JESD22-A103D",  "/specs/JESD22-A103D.pdf")],
+    "shadow_moire":[("JESD22-B112C",  "/specs/JESD22-B112C.pdf")],
+    "htol":        [("JESD22-A108G",  "/specs/JESD22-A108G.pdf"),
+                    # ("JESD85",      "/specs/JESD85.pdf"),        # TODO: add file
+                    ],
+    "elfr":        [("JESD22-A108G",  "/specs/JESD22-A108G.pdf"),
+                    ("JESD74A",       "/specs/JESD74A.pdf")],
+    "thb":         [# ("JESD22-A110", "/specs/JESD22-A110.pdf"),  # TODO: add file
+                    ],
+    "esd_cdm":     [("JS-002",        "/specs/JS-002.pdf")],
+    "esd_hbm":     [("JS-001",        "/specs/JS-001.pdf")],
+    "latchup":     [("JESD78E",       "/specs/JESD78E.pdf")],
+    "jesd47":      [("JESD47I",       "/specs/JESD47I.pdf")],
+    "precond":     [("JESD22-A113I",  "/specs/JESD22-A113I.pdf"),
+                    # ("J-STD-020F",  "/specs/J-STD-020F.pdf"),   # TODO: add file
+                    ],
 }
 
 # ── TC condition table (JESD22-A104F Table 1 & Table 3) ───────────────────────
@@ -651,12 +661,30 @@ class LookupHandler(Base):
             if t["destructive"]:
                 badges += '<span class="badge bg-danger ms-2" style="font-size:.7rem">Destructive</span>'
             notes_row = f'<tr><th class="fw-normal text-muted pe-3">Notes</th><td>{t["notes"]}</td></tr>' if t["notes"] else ""
-            spec_url  = SPEC_URLS.get(key, "")
-            spec_link = (f'<a href="{spec_url}" target="_blank" rel="noopener" '
-                         f'class="text-muted small ms-2" title="View JEDEC spec">'
-                         f'<i class="bi bi-file-earmark-text"></i> spec</a>') if spec_url else ""
-            std_link  = (f'<a href="{spec_url}" target="_blank" rel="noopener" '
-                         f'class="text-decoration-none">{t["standard"]}</a>') if spec_url else t["standard"]
+            spec_docs = SPEC_URLS.get(key, [])
+            # Header badge links (small, shown in accordion button)
+            spec_link = " ".join(
+                f'<a href="{url}" target="_blank" rel="noopener" '
+                f'class="text-muted small ms-2" title="View {lbl}">'
+                f'<i class="bi bi-file-earmark-text"></i> {lbl}</a>'
+                for lbl, url in spec_docs
+            )
+            # Standard row: individual clickable labels for each available PDF
+            if spec_docs:
+                std_link = " / ".join(
+                    f'<a href="{url}" target="_blank" rel="noopener" '
+                    f'class="text-decoration-none">{lbl}</a>'
+                    for lbl, url in spec_docs
+                )
+                # Append any listed standard names not covered by a link
+                # (so unlinkable docs like JESD85 still appear as plain text)
+                linked_labels = {lbl for lbl, _ in spec_docs}
+                raw_standards = [s.strip() for s in t["standard"].replace(" /", "/").split("/")]
+                missing = [s for s in raw_standards if not any(s.startswith(ll) or ll.startswith(s.split("-")[0]) for ll in linked_labels)]
+                if missing:
+                    std_link += " / " + " / ".join(missing)
+            else:
+                std_link = t["standard"]
 
             # TC and T-Shock get interactive condition pickers; all others use static text
             if key == "tc":
@@ -1059,7 +1087,7 @@ class LookupHandler(Base):
               <strong>JESD47I</strong> — Stress-Test-Driven Qualification of Integrated Circuits
               <span class="text-muted ms-2" style="font-size:.8rem">Generic qualification guidelines &amp; pass/fail criteria</span>
             </div>
-            <a href="{SPEC_URLS['jesd47']}" target="_blank" class="btn btn-sm btn-outline-secondary ms-auto">
+            <a href="{SPEC_URLS['jesd47'][0][1]}" target="_blank" class="btn btn-sm btn-outline-secondary ms-auto">
               <i class="bi bi-download me-1"></i>Download PDF
             </a>
           </div>
@@ -1269,7 +1297,7 @@ class SampleSizeHandler(Base):
           </div>
           <div class="card-footer text-muted py-1 px-3" style="font-size:.75rem">
             Highlighted cell = selected C &amp; LTPD.
-            <a href="{SPEC_URLS['jesd47']}" target="_blank" class="ms-2">
+            <a href="{SPEC_URLS['jesd47'][0][1]}" target="_blank" class="ms-2">
               <i class="bi bi-file-earmark-pdf me-1"></i>JESD47I PDF
             </a>
           </div>
@@ -1754,11 +1782,16 @@ class ReportHandler(Base):
                        oninput="updatePF('{key}')">
               </td>"""
 
-            spec_url  = SPEC_URLS.get(key, "")
-            std_cell  = (f'<a href="{spec_url}" target="_blank" rel="noopener" '
-                         f'class="text-muted text-decoration-none" title="Open JEDEC spec">'
-                         f'{t["standard"]} <i class="bi bi-box-arrow-up-right" style="font-size:.65rem"></i></a>'
-                         ) if spec_url else t["standard"]
+            _spec_docs = SPEC_URLS.get(key, [])
+            if _spec_docs:
+                std_cell = " / ".join(
+                    f'<a href="{url}" target="_blank" rel="noopener" '
+                    f'class="text-muted text-decoration-none" title="Open {lbl}">'
+                    f'{lbl} <i class="bi bi-box-arrow-up-right" style="font-size:.65rem"></i></a>'
+                    for lbl, url in _spec_docs
+                )
+            else:
+                std_cell = t["standard"]
 
             test_rows += f"""
             <tr id="row-{key}">
@@ -3235,7 +3268,7 @@ class ProjectSampleSizeHandler(Base):
           </div>
           <div class="card-footer text-muted py-1 px-2" style="font-size:.68rem">
             Highlighted = selected C &amp; LTPD. &ensp;
-            <a href="{SPEC_URLS['jesd47']}" target="_blank" style="font-size:.68rem">
+            <a href="{SPEC_URLS['jesd47'][0][1]}" target="_blank" style="font-size:.68rem">
               <i class="bi bi-file-earmark-pdf me-1"></i>JESD47I PDF
             </a>
           </div>
