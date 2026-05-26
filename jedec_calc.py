@@ -216,7 +216,7 @@ TESTS = {
         "post_testing": "Functional",
         "destructive": True,
         "active_devices": True,
-        "notes": "Active devices only; biasing conditions per applicable specification",
+        "notes": "Biasing conditions per applicable specification",
     },
     "hts": {
         "name": "HTS",
@@ -261,7 +261,7 @@ TESTS = {
         "destructive": False,
 
         "active_devices": True,
-        "notes": "Active devices only",
+        "notes": "",
     },
     "elfr": {
         "name": "ELFR",
@@ -276,7 +276,7 @@ TESTS = {
         "destructive": False,
 
         "active_devices": True,
-        "notes": "Active devices only",
+        "notes": "",
     },
     "thb": {
         "name": "THB",
@@ -291,7 +291,7 @@ TESTS = {
         "destructive": False,
 
         "active_devices": True,
-        "notes": "Active devices only",
+        "notes": "",
     },
     "esd_cdm": {
         "name": "ESD CDM",
