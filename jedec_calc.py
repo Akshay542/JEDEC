@@ -326,7 +326,7 @@ TESTS = {
     "latchup": {
         "name": "Latch-Up",
         "full_name": "Latch-Up",
-        "standard": "JESD78E",
+        "standard": "JESD78F",
         "condition": "Class II, max datasheet operating temperature",
         "duration": "Per standard",
         "sample_size": None,

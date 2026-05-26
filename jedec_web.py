@@ -64,7 +64,7 @@ SPEC_URLS: dict[str, list[tuple[str, str]]] = {
     "thb":         [("JESD22-A110",   "/specs/JESD22-A110.pdf")],
     "esd_cdm":     [("JS-002",        "/specs/JS-002.pdf")],
     "esd_hbm":     [("JS-001",        "/specs/JS-001.pdf")],
-    "latchup":     [("JESD78E",       "/specs/JESD78E.pdf")],
+    "latchup":     [("JESD78F",       "/specs/JESD78F.pdf")],
     "jesd47":      [("JESD47I",       "/specs/JESD47I.pdf")],
     "precond":     [("JESD22-A113I",  "/specs/JESD22-A113I.pdf"),
                     ("J-STD-020F",    "/specs/J-STD-020F.pdf")],
