@@ -111,6 +111,14 @@ UHAST_CONDITIONS = {
     "B": {"temp_db": 110, "rh": 85, "temp_wb": 105.2, "vp_kpa": 122,  "vp_psia": 17.7, "duration": "264 hours (−0, +2)"},
 }
 
+# ── THB condition table (JESD22-A110 §3.1 Table 1) ───────────────────────────
+# Same temperature/humidity extremes as UHAST; difference is bias (Vdd) applied.
+# tmin_tol: dry-bulb tolerance ±2°C; rh_tol: ±5%
+THB_CONDITIONS = {
+    "A": {"temp_db": 130, "rh": 85, "temp_wb": 124.7, "vp_kpa": 230, "vp_psia": 33.3, "duration": "96 hours (−0, +2)"},
+    "B": {"temp_db": 110, "rh": 85, "temp_wb": 105.2, "vp_kpa": 122, "vp_psia": 17.7, "duration": "264 hours (−0, +2)"},
+}
+
 # ── M-Shock condition table (JESD22-B110B Table 1 — free state test levels) ───
 # accel_g: acceleration peak (g); pulse_ms: half-sine pulse duration (ms)
 # vel_cms / vel_ins: velocity change; drop_cm / drop_in: equivalent drop height
@@ -642,6 +650,7 @@ class LookupHandler(Base):
         )
         tshock_js_data = _json.dumps(TSHOCK_CONDITIONS)
         uhast_js_data   = _json.dumps(UHAST_CONDITIONS)
+        thb_js_data     = _json.dumps(THB_CONDITIONS)
         mshock_js_data  = _json.dumps(MSHOCK_CONDITIONS)
         vib_sin_js_data = _json.dumps(VIB_SIN_CONDITIONS)
         vib_ran_js_data = _json.dumps(VIB_RAN_CONDITIONS)
@@ -857,6 +866,31 @@ class LookupHandler(Base):
                     <span class="text-muted">Duration (JESD47 default):</span>
                     <span>1000 hours</span>
                     &ensp;<span class="text-muted small">(other durations acceptable per product requirements)</span>
+                  </div>
+                </td>"""
+            elif key == "thb":
+                thb_opts = "".join(
+                    f'<option value="{ltr}"{"  selected" if ltr == "A" else ""}>'
+                    f'Condition {ltr} &nbsp;({v["temp_db"]}°C / {v["rh"]}% RH)'
+                    f'</option>'
+                    for ltr, v in THB_CONDITIONS.items()
+                )
+                condition_cell = f"""<td>
+                  <select id="thb-cond-sel" class="form-select form-select-sm mb-2"
+                          style="max-width:280px" onchange="updateThbCond(this.value)">
+                    {thb_opts}
+                  </select>
+                  <div style="font-size:.82rem;line-height:1.7">
+                    <span id="thb-label" class="fw-semibold">130°C / 85% RH</span>
+                    &nbsp;<span class="text-muted">(Condition <span id="thb-ltr">A</span>)</span><br>
+                    <span class="text-muted">Temp (dry-bulb):</span> <span id="thb-tdb">130 ± 2°C</span>
+                    &ensp;|&ensp;
+                    <span class="text-muted">RH:</span> <span id="thb-rh">85 ± 5%</span><br>
+                    <span class="text-muted">Temp (wet-bulb):</span> <span id="thb-twb">124.7°C</span>
+                    &ensp;|&ensp;
+                    <span class="text-muted">Vapor pressure:</span> <span id="thb-vp">230 kPa (33.3 psia)</span><br>
+                    <span class="text-muted">Duration:</span> <span id="thb-dur">96 hours (−0, +2)</span><br>
+                    <span class="text-muted">Bias:</span> V<sub>dd</sub> applied at max operating voltage
                   </div>
                 </td>"""
             elif key == "pc":
@@ -1093,6 +1127,7 @@ class LookupHandler(Base):
         const TC_DATA     = {tc_js_data};
         const TSHOCK_DATA = {tshock_js_data};
         const UHAST_DATA   = {uhast_js_data};
+        const THB_DATA     = {thb_js_data};
         const MSHOCK_DATA   = {mshock_js_data};
         const VIB_SIN_DATA  = {vib_sin_js_data};
         const VIB_RAN_DATA  = {vib_ran_js_data};
@@ -1235,6 +1270,18 @@ class LookupHandler(Base):
           document.getElementById("uh-twb").textContent  = c.temp_wb + "\u00b0C";
           document.getElementById("uh-vp").textContent   = c.vp_kpa + " kPa (" + c.vp_psia + " psia)";
           document.getElementById("uh-dur").textContent  = c.duration;
+        }}
+
+        function updateThbCond(ltr) {{
+          const c = THB_DATA[ltr];
+          if (!c) return;
+          document.getElementById("thb-ltr").textContent  = ltr;
+          document.getElementById("thb-label").textContent = c.temp_db + "\u00b0C / " + c.rh + "% RH";
+          document.getElementById("thb-tdb").textContent  = c.temp_db + " \u00b1 2\u00b0C";
+          document.getElementById("thb-rh").textContent   = c.rh + " \u00b1 5%";
+          document.getElementById("thb-twb").textContent  = c.temp_wb + "\u00b0C";
+          document.getElementById("thb-vp").textContent   = c.vp_kpa + " kPa (" + c.vp_psia + " psia)";
+          document.getElementById("thb-dur").textContent  = c.duration;
         }}
         </script>"""
         self.emit(body, "Test Lookup", "lookup")
