@@ -330,7 +330,7 @@ TESTS = {
         "condition": "Class II, max datasheet operating temperature",
         "duration": "Per standard",
         "sample_size": None,
-        "pass_criteria": "Class II pass",
+        "pass_criteria": "DUT meets electrical spec pre- and post-stress; no latch-up triggered or confirmed during signal pin test or supply test (per JESD78F flowchart)",
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
