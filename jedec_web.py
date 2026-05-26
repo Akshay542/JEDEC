@@ -58,19 +58,16 @@ SPEC_URLS: dict[str, list[tuple[str, str]]] = {
     "hts":         [("JESD22-A103D",  "/specs/JESD22-A103D.pdf")],
     "shadow_moire":[("JESD22-B112C",  "/specs/JESD22-B112C.pdf")],
     "htol":        [("JESD22-A108G",  "/specs/JESD22-A108G.pdf"),
-                    # ("JESD85",      "/specs/JESD85.pdf"),        # TODO: add file
-                    ],
+                    ("JESD85",        "/specs/JESD85.pdf")],
     "elfr":        [("JESD22-A108G",  "/specs/JESD22-A108G.pdf"),
                     ("JESD74A",       "/specs/JESD74A.pdf")],
-    "thb":         [# ("JESD22-A110", "/specs/JESD22-A110.pdf"),  # TODO: add file
-                    ],
+    "thb":         [("JESD22-A110",   "/specs/JESD22-A110.pdf")],
     "esd_cdm":     [("JS-002",        "/specs/JS-002.pdf")],
     "esd_hbm":     [("JS-001",        "/specs/JS-001.pdf")],
     "latchup":     [("JESD78E",       "/specs/JESD78E.pdf")],
     "jesd47":      [("JESD47I",       "/specs/JESD47I.pdf")],
     "precond":     [("JESD22-A113I",  "/specs/JESD22-A113I.pdf"),
-                    # ("J-STD-020F",  "/specs/J-STD-020F.pdf"),   # TODO: add file
-                    ],
+                    ("J-STD-020F",    "/specs/J-STD-020F.pdf")],
 }
 
 # ── TC condition table (JESD22-A104F Table 1 & Table 3) ───────────────────────
