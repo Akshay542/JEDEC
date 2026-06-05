@@ -403,11 +403,12 @@ TABLE_A = {
 
 # ─── Part Type ───────────────────────────────────────────────────────────────
 
-PART_TYPE = None   # "active" | "ttv"
+PART_TYPE = None   # "active" | "ttv" | "die"
 
 PART_TYPE_LABELS = {
     "active": "Active Device",
     "ttv":    "Thermal Test Vehicle (inactive)",
+    "die":    "Die",
 }
 
 def ask_part_type():

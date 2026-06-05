@@ -236,9 +236,14 @@ def _csam_eval(before_pc, after_pc, after_test):
         return ("Fail — Post-test CSAM", "danger")
     return ("Pass", "success")
 
+_DIE_EXCLUDED = {"pc", "shadow_moire"}
+
 def applicable_tests(part_type: str) -> dict:
     if part_type == "ttv":
         return {k: v for k, v in TESTS.items() if not v["active_devices"]}
+    if part_type == "die":
+        return {k: v for k, v in TESTS.items()
+                if not v["active_devices"] and k not in _DIE_EXCLUDED}
     return TESTS
 
 STATUS_OPTS = [
@@ -305,8 +310,8 @@ def _page(active: str, part_type: str, body: str, title: str = "Package Reliabil
 </div>"""
     else:
         project_subnav = ""
-    pt_label = "TTV" if part_type == "ttv" else "Active"
-    pt_full  = "Thermal Test Vehicle" if part_type == "ttv" else "Active Device"
+    pt_label = {"ttv": "TTV", "die": "Die"}.get(part_type, "Active")
+    pt_full  = {"ttv": "Thermal Test Vehicle", "die": "Die"}.get(part_type, "Active Device")
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -537,7 +542,7 @@ def _page(active: str, part_type: str, body: str, title: str = "Package Reliabil
     <div class="collapse navbar-collapse" id="nb">
       <ul class="navbar-nav me-auto mb-0">{nav}</ul>
       <a href="/part-type" class="pt-pill text-decoration-none">
-        <span class="pt-dot" style="background:{"#c8432a" if part_type=="ttv" else "#2d7a4f"}"></span>
+        <span class="pt-dot" style="background:{"#c8432a" if part_type=="ttv" else "#8b5cf6" if part_type=="die" else "#2d7a4f"}"></span>
         {pt_label} &mdash; {pt_full}
         <i class="bi bi-pencil-square ms-1" style="font-size:.65rem"></i>
       </a>
@@ -605,12 +610,21 @@ class PartTypeHandler(Base):
                       </label>
                     </div>
                   </div>
-                  <div class="p-3 border mb-4" style="{sel_style('ttv')}">
+                  <div class="p-3 border mb-3" style="{sel_style('ttv')}">
                     <div class="form-check">
                       <input class="form-check-input" type="radio" name="part_type" id="pt_t" value="ttv" {sel('ttv')}>
                       <label class="form-check-label ms-1" for="pt_t">
                         <div style="font-size:.88rem;font-weight:500">Thermal Test Vehicle (TTV) — Inactive</div>
-                        <div style="font-size:.8rem;color:var(--df-grey);margin-top:.25rem">Mechanical &amp; thermal tests only: uHAST, TC, T-Shock, M-Shock, Vibration, Pwr Cycling, HTS, Shadow Moiré</div>
+                        <div style="font-size:.8rem;color:var(--df-grey);margin-top:.25rem">Mechanical &amp; thermal tests only: uHAST, TC, T-Shock, M-Shock, Vibration, Power Cycling, HTS, Shadow Moiré</div>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="p-3 border mb-4" style="{sel_style('die')}">
+                    <div class="form-check">
+                      <input class="form-check-input" type="radio" name="part_type" id="pt_d" value="die" {sel('die')}>
+                      <label class="form-check-label ms-1" for="pt_d">
+                        <div style="font-size:.88rem;font-weight:500">Die</div>
+                        <div style="font-size:.8rem;color:var(--df-grey);margin-top:.25rem">TTV tests excluding Power Cycling and Shadow Moiré: uHAST, TC, T-Shock, M-Shock, Vibration, PTC, HTS</div>
                       </label>
                     </div>
                   </div>
@@ -627,7 +641,7 @@ class PartTypeHandler(Base):
     def post(self):
         _, s = self.sess()
         pt = self.get_argument("part_type", "active")
-        if pt in ("active", "ttv"):
+        if pt in ("active", "ttv", "die"):
             s["part_type"] = pt
         self.redirect(self.get_argument("next", "/lookup"))
 
@@ -2934,13 +2948,14 @@ class ProjectListHandler(Base):
             rows = ""
             for p in projects:
                 status_color = {"active": "success", "complete": "info", "archived": "secondary"}.get(p["status"], "secondary")
+                _pt_badge = {"ttv": "TTV", "die": "Die"}.get(p["part_type"], "Active")
                 rows += f"""
                 <tr>
                   <td><a href="/projects/{p['id']}" class="fw-semibold text-decoration-none"
                          style="color:var(--df-black)">{p['name']}</a></td>
                   <td class="text-muted" style="font-size:.83rem">{p['description'] or '—'}</td>
                   <td><span class="badge" style="font-size:.72rem;background:var(--df-bg);color:var(--df-mid);border:1px solid var(--df-border)">
-                    {'TTV' if p['part_type']=='ttv' else 'Active'}</span></td>
+                    {_pt_badge}</span></td>
                   <td><span class="badge bg-{status_color}">{p['status'].capitalize()}</span></td>
                   <td class="text-muted" style="font-size:.82rem">{_fmt_dt(p['updated_at'])}</td>
                   <td class="text-muted" style="font-size:.82rem">{_fmt_dt(p['created_at'])}</td>
@@ -3022,6 +3037,7 @@ class ProjectListHandler(Base):
                   <label class="form-label">Device Type</label>
                   <select class="form-select" name="part_type">
                     <option value="ttv">TTV</option>
+                    <option value="die">Die</option>
                     <option value="active">Active Device</option>
                   </select>
                 </div>
@@ -3095,6 +3111,7 @@ class ProjectDetailHandler(Base):
             for v, l in [("active","Active"),("complete","Complete"),("archived","Archived")]
         )
 
+        _pt_str      = {"ttv": "TTV", "die": "Die"}.get(p["part_type"], "Active Device")
         meta_device  = meta.get("device_name","")
         meta_pkg     = meta.get("device_pkg","")
         meta_bond    = meta.get("bond_type","")
@@ -3122,7 +3139,7 @@ class ProjectDetailHandler(Base):
                     <div class="col-sm-4"><span class="text-muted d-block">Engineer</span><strong>{meta_eng or '—'}</strong></div>
                     <div class="col-sm-4"><span class="text-muted d-block">Lot / Wafer ID</span><strong>{meta_lot or '—'}</strong></div>
                     <div class="col-sm-4"><span class="text-muted d-block">Device Type</span>
-                      <strong>{'TTV' if p['part_type']=='ttv' else 'Active Device'}</strong></div>
+                      <strong>{_pt_str}</strong></div>
                     {'<div class="col-12"><span class="text-muted d-block">Notes</span><span>' + meta_notes + '</span></div>' if meta_notes else ''}
                   </div>
                 </div>
@@ -3788,14 +3805,8 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
             "Preparation", "", 2),
         ("SCD Bonding + CSAM",
             "Preparation", "", cw(total / 4)),   # 1 day per 4 samples
-        ("TTV Assy",
-            "Preparation", "", cw(total)),        # 1 day per sample
         ("CSAM",
             "Preparation", "", cw(total / 20)),
-        ("TTV Calibration",
-            "Preparation", "", cw(total / 4)),   # 1 day per 4 samples
-        ("Func + Thermal Test",
-            "Preparation", "", cw(total / 5)),   # 1 day per 5 samples
         ("Preconditioning + CSAM",
             "Stress", "", 2),
     ]
@@ -3812,14 +3823,12 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
     # Post steps split: CSAM (1 wk) → Testing (1 day/sample → weeks)
     stress_start = sw
     pairs = [
-        ("uHAST",          "uhast",  1,          "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
-        ("TC",             "tc",     6,          "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
-        ("T-Shock",        "tshock", 1,          "Post-T-Shock CSAM", "Post-T-Shock Testing", "tshock", cw(n("tshock"))),
-        ("M-Shock",        "mshock", 1,          "Post-M-Shock CSAM", "Post-M-Shock Testing", "mshock", cw(n("mshock"))),
-        ("Vibration",      "vib",    1,          "Post-Vib CSAM",     "Post-Vib Testing",     "vib",    cw(n("vib"))),
-        ("Power Cycling",  "pc",     cw(n("pc")),"Post-PC CSAM",      "Post-PC Testing",      "pc",     cw(n("pc"))),
-        ("HTS",            "hts",    6,          "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
-        ("Shadow Moiré",   "shadow_moire", 1,    None,                None,                   "",       0),
+        ("uHAST",    "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
+        ("TC",       "tc",     6, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
+        ("T-Shock",  "tshock", 1, "Post-T-Shock CSAM", "Post-T-Shock Testing", "tshock", cw(n("tshock"))),
+        ("M-Shock",  "mshock", 1, "Post-M-Shock CSAM", "Post-M-Shock Testing", "mshock", cw(n("mshock"))),
+        ("Vibration","vib",    1, "Post-Vib CSAM",     "Post-Vib Testing",     "vib",    cw(n("vib"))),
+        ("HTS",      "hts",    6, "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
     ]
 
     for (sname, skey, sdur, pcsam_name, ptest_name, tkey, ptest_dur) in pairs:
