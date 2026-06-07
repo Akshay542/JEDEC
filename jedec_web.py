@@ -199,36 +199,40 @@ HTS_CONDITIONS = {
     "F": {"temp_c": 300},
 }
 
+# Known JEDEC durations in hours per (test_key, condition_key).
+# Tests not listed here use GANTT task duration (weeks × 168 h) as fallback.
+_CONDITION_HOURS: dict[str, dict[str, float]] = {
+    "uhast": {"A":  96.0, "B": 264.0},
+    "thb":   {"A":  96.0, "B": 264.0},
+    "hts":   {k: 1000.0 for k in ["A","B","C","D","E","F"]},
+    # TC: approximate hours (500–900 cycles × ~1 h/cycle)
+    "tc":    {"A":500,"B":500,"C":500,"G":700,"H":500,"I":700,
+              "J":600,"K":600,"L":600,"M":600,"N":700,"R":700,"T":900},
+}
+
 # ── Per-test selectable conditions (for Planner + Schedule tracker) ───────────
 # Maps test_key → list of (condition_key, display_label) tuples
+# Duration appended where a fixed hour count is known.
 _TEST_CONDITION_OPTIONS: dict[str, list[tuple[str, str]]] = {
     "uhast":  [(k, f"Cond {k} — {v['temp_db']}°C / {v['rh']}% RH / {v['duration']}")
                for k, v in UHAST_CONDITIONS.items()],
-    "tc":     [(k, f"Cond {k} — {v['tmin']:+d}°C to {v['tmax']:+d}°C")
+    "tc":     [(k, (f"Cond {k} — {v['tmin']:+d}°C to {v['tmax']:+d}°C"
+                    + (f" / {int(_CONDITION_HOURS['tc'][k])}h"
+                       if k in _CONDITION_HOURS['tc'] else "")))
                for k, v in TC_CONDITIONS.items()],
     "tshock": [(k, f"Cond {k} — {v['cold']:+d}°C / {v['hot']:+d}°C")
                for k, v in TSHOCK_CONDITIONS.items()],
     "mshock": [(k, f"SC {k} — {v['accel_g']}g / {v['pulse_ms']} ms")
                for k, v in MSHOCK_CONDITIONS.items()],
-    "hts":    [(k, f"Cond {k} — +{v['temp_c']}°C")
+    "hts":    [(k, f"Cond {k} — +{v['temp_c']}°C / 1000h")
                for k, v in HTS_CONDITIONS.items()],
     "pc":     [(k, f"Cond {k} — {v['tmin']}–{v['tmax']}°C / ΔT {v['delta_t']}°C")
                for k, v in PC_CONDITIONS.items()],
-    "ptc":    [(k, f"Cond {k} — {v['tmin']:+d}°C to {v['tmax']:+d}°C")
+    "ptc":    [(k, f"Cond {k} — {v['tmin']:+d}°C to {v['tmax']:+d}°C"
+                    f" / trans ≤{v['trans_min']}min / dwell ≥{v['dwell_min']}min")
                for k, v in PTC_CONDITIONS.items()],
     "thb":    [(k, f"Cond {k} — {v['temp_db']}°C / {v['rh']}% RH / {v['duration']}")
                for k, v in THB_CONDITIONS.items()],
-}
-
-# Known JEDEC durations in hours per (test_key, condition_key).
-# Tests not listed here use GANTT task duration (weeks × 168 h) as fallback.
-_CONDITION_HOURS: dict[str, dict[str, float]] = {
-    "uhast": {"A": 96.0,  "B": 264.0},
-    "thb":   {"A": 96.0,  "B": 264.0},
-    "hts":   {k: 1000.0 for k in ["A","B","C","D","E","F"]},
-    # TC: 1000 cycles; approximate hours by condition cycle rate
-    "tc":    {"A":500,"B":500,"C":500,"G":700,"H":500,"I":700,
-              "J":600,"K":600,"L":600,"M":600,"N":700,"R":700,"T":900},
 }
 
 # ── In-memory sessions ─────────────────────────────────────────────────────────
@@ -4017,6 +4021,14 @@ class ProjectTrackerHandler(Base):
                     status="complete",
                     completed_at=_dt.utcnow().isoformat(timespec="seconds"),
                 )
+        elif action == "test_uncomplete":
+            test_key = self.get_argument("test_key", "").strip()
+            if test_key:
+                _db.upsert_test_tracker(
+                    p["id"], test_key,
+                    status="active",
+                    completed_at=None,
+                )
         elif action == "bulk_edit":
             import json as _json
             try:
@@ -4341,7 +4353,15 @@ class ProjectTrackerHandler(Base):
                     f'<div>Completed: <strong>{_fmt_date(completed_at)}</strong></div>'
                     f'</div>'
                 )
-                action_html = ""
+                action_html     = (
+                    f'<form method="post" action="/projects/{pid}/tracker" class="mt-2">'
+                    f'<input type="hidden" name="action" value="test_uncomplete">'
+                    f'<input type="hidden" name="test_key" value="{tkey}">'
+                    f'<button type="submit" class="btn btn-sm w-100"'
+                    f' style="background:#fff;color:#6b7280;border:1px solid #d1d5db;'
+                    f'font-size:.7rem;padding:2px 0">↩ Undo Complete</button>'
+                    f'</form>'
+                )
             elif tr_status == "active":
                 hdr_bg, hdr_fg = "#fff7ed", "#9a3412"
                 hdr_text       = "▶ In Progress"
@@ -4391,10 +4411,12 @@ class ProjectTrackerHandler(Base):
             else:
                 hdr_bg, hdr_fg = "#f3f4f6", "#6b7280"
                 hdr_text       = "To be initiated"
-                sched_date     = week_date(task_start_week).strftime("%-d %b")
+                _sd            = week_date(task_start_week)
+                _iso_wk        = _sd.isocalendar()[1]
+                _sched_date    = _sd.strftime("%-d %b")
                 status_body    = (
                     f'<div style="font-size:.72rem;color:#9ca3af;margin-top:4px">'
-                    f'Scheduled: Wk {task_start_week} ({sched_date})</div>'
+                    f'Scheduled: W{_iso_wk} ({_sched_date})</div>'
                 )
                 action_html = ""
 
