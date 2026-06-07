@@ -199,6 +199,38 @@ HTS_CONDITIONS = {
     "F": {"temp_c": 300},
 }
 
+# ── Per-test selectable conditions (for Planner + Schedule tracker) ───────────
+# Maps test_key → list of (condition_key, display_label) tuples
+_TEST_CONDITION_OPTIONS: dict[str, list[tuple[str, str]]] = {
+    "uhast":  [(k, f"Cond {k} — {v['temp_db']}°C / {v['rh']}% RH / {v['duration']}")
+               for k, v in UHAST_CONDITIONS.items()],
+    "tc":     [(k, f"Cond {k} — {v['tmin']:+d}°C to {v['tmax']:+d}°C")
+               for k, v in TC_CONDITIONS.items()],
+    "tshock": [(k, f"Cond {k} — {v['cold']:+d}°C / {v['hot']:+d}°C")
+               for k, v in TSHOCK_CONDITIONS.items()],
+    "mshock": [(k, f"SC {k} — {v['accel_g']}g / {v['pulse_ms']} ms")
+               for k, v in MSHOCK_CONDITIONS.items()],
+    "hts":    [(k, f"Cond {k} — +{v['temp_c']}°C")
+               for k, v in HTS_CONDITIONS.items()],
+    "pc":     [(k, f"Cond {k} — {v['tmin']}–{v['tmax']}°C / ΔT {v['delta_t']}°C")
+               for k, v in PC_CONDITIONS.items()],
+    "ptc":    [(k, f"Cond {k} — {v['tmin']:+d}°C to {v['tmax']:+d}°C")
+               for k, v in PTC_CONDITIONS.items()],
+    "thb":    [(k, f"Cond {k} — {v['temp_db']}°C / {v['rh']}% RH / {v['duration']}")
+               for k, v in THB_CONDITIONS.items()],
+}
+
+# Known JEDEC durations in hours per (test_key, condition_key).
+# Tests not listed here use GANTT task duration (weeks × 168 h) as fallback.
+_CONDITION_HOURS: dict[str, dict[str, float]] = {
+    "uhast": {"A": 96.0,  "B": 264.0},
+    "thb":   {"A": 96.0,  "B": 264.0},
+    "hts":   {k: 1000.0 for k in ["A","B","C","D","E","F"]},
+    # TC: 1000 cycles; approximate hours by condition cycle rate
+    "tc":    {"A":500,"B":500,"C":500,"G":700,"H":500,"I":700,
+              "J":600,"K":600,"L":600,"M":600,"N":700,"R":700,"T":900},
+}
+
 # ── In-memory sessions ─────────────────────────────────────────────────────────
 SESSIONS: dict = {}
 
@@ -1022,8 +1054,10 @@ class LookupHandler(Base):
         </div>
         <div class="precond-bar">
           <strong>Precursor for all tests &mdash;</strong>
-          PC ({PRECOND['full_name']}; {PRECOND['standard']}) &nbsp;&middot;&nbsp;
-          {PRECOND['condition']} &nbsp;&middot;&nbsp; {PRECOND['duration']}
+          PC ({PRECOND['full_name']};
+          {" / ".join(f'<a href="{url}" target="_blank" style="color:inherit;text-decoration:underline dotted">{lbl}</a>' for lbl, url in SPEC_URLS.get("precond", []))})
+          &nbsp;&middot;&nbsp; {PRECOND['condition']}
+          &nbsp;&middot;&nbsp; {PRECOND['duration']}
           &nbsp;&middot;&nbsp; Pass: {PRECOND['pass_criteria']}
         </div>
         <div class="alert alert-info d-flex align-items-start gap-2 mb-3 mt-2 py-2 px-3" role="alert" style="font-size:.85rem">
@@ -3261,14 +3295,20 @@ class ProjectSampleSizeHandler(Base):
         if not p: return
         action = self.get_argument("action", "planner")
         if action == "per_test":
-            # Save per-test sample counts
+            # Save per-test sample counts and selected conditions
             tests = applicable_tests(p["part_type"])
             existing = _db.get_samples(int(pid))
+            new_conditions = {}
             for key in tests:
                 val = self.get_argument(f"n_{key}", "")
                 if val.strip().isdigit():
                     existing[key] = int(val.strip())
+                cond = self.get_argument(f"cond_{key}", "").strip()
+                if cond:
+                    new_conditions[key] = cond
             _db.save_samples(int(pid), existing)
+            if new_conditions:
+                _db.save_test_conditions(int(pid), new_conditions)
             self._render(p)
             return
         try:
@@ -3290,6 +3330,7 @@ class ProjectSampleSizeHandler(Base):
         pid   = p["id"]
         tests = applicable_tests(p["part_type"])
         saved_counts = _db.get_samples(int(pid))
+        saved_conds  = _db.get_test_conditions(int(pid))
 
         # ── Table A ────────────────────────────────────────────────────────
         ltpd_cols = TABLE_A_LTPD
@@ -3363,6 +3404,22 @@ class ProjectSampleSizeHandler(Base):
             count = saved_counts.get(key, "")
             if isinstance(count, list):
                 count = len(count) if count else ""
+            # Condition dropdown (only for tests that have options)
+            cond_opts = _TEST_CONDITION_OPTIONS.get(key, [])
+            saved_cond = saved_conds.get(key, "")
+            if cond_opts:
+                opt_html = '<option value="">— select —</option>'
+                for ckey, clabel in cond_opts:
+                    sel = ' selected' if ckey == saved_cond else ''
+                    opt_html += f'<option value="{ckey}"{sel}>{clabel}</option>'
+                cond_cell = (
+                    f'<td style="padding:5px 8px">'
+                    f'<select name="cond_{key}" class="form-select form-select-sm" style="font-size:.72rem;min-width:200px">'
+                    f'{opt_html}</select>'
+                    f'</td>'
+                )
+            else:
+                cond_cell = '<td style="padding:5px 8px;font-size:.72rem;color:var(--df-grey)">—</td>'
             alloc_rows += (
                 f'<tr>'
                 f'<td style="padding:5px 8px;font-size:.78rem;font-weight:500">{t["name"]}</td>'
@@ -3371,6 +3428,7 @@ class ProjectSampleSizeHandler(Base):
                 f'<input type="number" name="n_{key}" value="{count}" min="0" '
                 f'class="form-control form-control-sm" style="width:72px" placeholder="—">'
                 f'</td>'
+                f'{cond_cell}'
                 f'</tr>'
             )
 
@@ -3389,6 +3447,7 @@ class ProjectSampleSizeHandler(Base):
                     <th style="padding:5px 8px;font-size:.72rem">Test</th>
                     <th style="padding:5px 8px;font-size:.72rem">Std</th>
                     <th style="padding:5px 8px;font-size:.72rem">n</th>
+                    <th style="padding:5px 8px;font-size:.72rem">Condition</th>
                   </tr>
                 </thead>
                 <tbody>{alloc_rows}</tbody>
@@ -3936,6 +3995,28 @@ class ProjectTrackerHandler(Base):
                             start_week=t["start_week"], duration=t["duration"],
                             status=t["status"],
                         )
+        elif action == "test_start":
+            from datetime import datetime as _dt
+            test_key = self.get_argument("test_key", "").strip()
+            if test_key:
+                conds    = _db.get_test_conditions(p["id"])
+                cond_key = conds.get(test_key, "")
+                dur      = _CONDITION_HOURS.get(test_key, {}).get(cond_key, None)
+                _db.upsert_test_tracker(
+                    p["id"], test_key,
+                    status="active",
+                    started_at=_dt.utcnow().isoformat(timespec="seconds"),
+                    duration_hours=dur,
+                )
+        elif action == "test_complete":
+            from datetime import datetime as _dt
+            test_key = self.get_argument("test_key", "").strip()
+            if test_key:
+                _db.upsert_test_tracker(
+                    p["id"], test_key,
+                    status="complete",
+                    completed_at=_dt.utcnow().isoformat(timespec="seconds"),
+                )
         elif action == "bulk_edit":
             import json as _json
             try:
@@ -3967,7 +4048,7 @@ class ProjectTrackerHandler(Base):
         self.redirect(f"/projects/{p['id']}/tracker")
 
     def _render_gantt(self, p: dict, tasks: list, has_history: bool = False) -> str:
-        from datetime import date, timedelta
+        from datetime import date, timedelta, datetime as _dt
         pid = p["id"]
 
         # ── Calendar anchor ───────────────────────────────────────────────
@@ -4215,6 +4296,140 @@ class ProjectTrackerHandler(Base):
             f'</button></form>'
         )
 
+        # ── Test status overview (stress tests) ───────────────────────────
+        tracker_data  = _db.get_test_tracker(pid)
+        saved_conds_ov = _db.get_test_conditions(pid)
+        # Collect unique stress test keys from task list (maintain order)
+        seen_tkeys: set = set()
+        stress_tasks: list = []
+        for t in tasks:
+            tkey = (t.get("test_key") or "").strip()
+            if tkey and tkey not in seen_tkeys:
+                seen_tkeys.add(tkey)
+                stress_tasks.append(t)
+
+        ov_cards = ""
+        for t in stress_tasks:
+            tkey       = t["test_key"]
+            test_info  = TESTS.get(tkey, {})
+            test_name  = test_info.get("name", t["task_name"])
+            cond_key   = saved_conds_ov.get(tkey, "")
+            cond_opts  = _TEST_CONDITION_OPTIONS.get(tkey, [])
+            cond_label = next((lbl for k, lbl in cond_opts if k == cond_key), "")
+            tr         = tracker_data.get(tkey, {})
+            tr_status  = tr.get("status", "pending")
+            started_at    = tr.get("started_at",    "") or ""
+            completed_at  = tr.get("completed_at",  "") or ""
+            dur_hours     = tr.get("duration_hours", None)
+
+            task_start_week = t["start_week"]
+            is_reachable    = (current_week is not None and
+                               current_week >= task_start_week)
+
+            def _fmt_date(s):
+                try:
+                    return date.fromisoformat(s[:10]).strftime("%-d %b %Y")
+                except Exception:
+                    return s[:10] if s else "—"
+
+            if tr_status == "complete":
+                hdr_bg, hdr_fg  = "#d1fae5", "#065f46"
+                hdr_text        = "✓ Complete"
+                status_body     = (
+                    f'<div style="font-size:.72rem;color:#374151;margin-top:4px">'
+                    f'<div>Started: <strong>{_fmt_date(started_at)}</strong></div>'
+                    f'<div>Completed: <strong>{_fmt_date(completed_at)}</strong></div>'
+                    f'</div>'
+                )
+                action_html = ""
+            elif tr_status == "active":
+                hdr_bg, hdr_fg = "#fff7ed", "#9a3412"
+                hdr_text       = "▶ In Progress"
+                if started_at and dur_hours:
+                    try:
+                        elapsed_h = (_dt.utcnow() -
+                                     _dt.fromisoformat(started_at)).total_seconds() / 3600
+                    except Exception:
+                        elapsed_h = 0.0
+                    pct       = min(100.0, elapsed_h / dur_hours * 100.0)
+                    bar_color = "#16a34a" if pct >= 100.0 else "#f97316"
+                    status_body = (
+                        f'<div style="background:#e5e7eb;border-radius:4px;height:8px;'
+                        f'margin-top:6px;overflow:hidden">'
+                        f'<div class="test-progress-bar" '
+                        f'data-started="{started_at}" data-duration="{dur_hours}"'
+                        f' style="width:{pct:.1f}%;background:{bar_color};height:100%;'
+                        f'border-radius:4px;transition:width .5s"></div>'
+                        f'</div>'
+                        f'<div class="test-progress-txt" style="font-size:.7rem;color:#6b7280;margin-top:2px">'
+                        f'{elapsed_h:.1f}h / {dur_hours:.0f}h</div>'
+                    )
+                else:
+                    status_body = '<div style="font-size:.72rem;color:#6b7280;margin-top:4px">In progress</div>'
+                action_html = (
+                    f'<form method="post" action="/projects/{pid}/tracker" class="mt-2">'
+                    f'<input type="hidden" name="action" value="test_complete">'
+                    f'<input type="hidden" name="test_key" value="{tkey}">'
+                    f'<button type="submit" class="btn btn-sm w-100"'
+                    f' style="background:#16a34a;color:#fff;border:none;'
+                    f'font-size:.72rem;padding:3px 0">Mark Complete</button>'
+                    f'</form>'
+                )
+            elif is_reachable:
+                hdr_bg, hdr_fg = "#dbeafe", "#1e40af"
+                hdr_text       = "⏳ Awaiting Initiation"
+                status_body    = '<div style="font-size:.72rem;color:#6b7280;margin-top:4px">Ready to begin</div>'
+                action_html    = (
+                    f'<form method="post" action="/projects/{pid}/tracker" class="mt-2">'
+                    f'<input type="hidden" name="action" value="test_start">'
+                    f'<input type="hidden" name="test_key" value="{tkey}">'
+                    f'<button type="submit" class="btn btn-sm w-100"'
+                    f' style="background:var(--df-accent);color:#fff;border:none;'
+                    f'font-size:.72rem;padding:3px 0">Start Test</button>'
+                    f'</form>'
+                )
+            else:
+                hdr_bg, hdr_fg = "#f3f4f6", "#6b7280"
+                hdr_text       = "To be initiated"
+                sched_date     = week_date(task_start_week).strftime("%-d %b")
+                status_body    = (
+                    f'<div style="font-size:.72rem;color:#9ca3af;margin-top:4px">'
+                    f'Scheduled: Wk {task_start_week} ({sched_date})</div>'
+                )
+                action_html = ""
+
+            cond_display = (
+                f'<div style="font-size:.7rem;color:#6b7280;margin-top:2px">{cond_label}</div>'
+                if cond_label else ""
+            )
+            ov_cards += (
+                f'<div style="min-width:195px;max-width:195px;border:1px solid var(--df-border);'
+                f'border-radius:8px;overflow:hidden;flex-shrink:0">'
+                f'<div style="background:{hdr_bg};color:{hdr_fg};padding:5px 10px;'
+                f'font-size:.72rem;font-weight:600">{hdr_text}</div>'
+                f'<div style="padding:8px 10px">'
+                f'<div style="font-size:.82rem;font-weight:600;color:var(--df-navy)">{test_name}</div>'
+                f'{cond_display}'
+                f'{status_body}'
+                f'{action_html}'
+                f'</div></div>'
+            )
+
+        overview_html = ""
+        if ov_cards:
+            overview_html = f"""
+        <div class="card mb-3" style="border:1px solid var(--df-border)">
+          <div class="card-df d-flex align-items-center gap-2">
+            <h6 class="mb-0" style="font-size:.82rem">Test Status Overview</h6>
+            <span class="text-white-50" style="font-size:.7rem">Stress tests only</span>
+          </div>
+          <div class="card-body p-3">
+            <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px">
+              {ov_cards}
+            </div>
+          </div>
+        </div>"""
+
         # ── Start-date picker ──────────────────────────────────────────────
         date_picker = (
             f'<form method="post" action="/projects/{pid}/tracker" '
@@ -4366,6 +4581,8 @@ class ProjectTrackerHandler(Base):
           <input type="hidden" name="action" value="bulk_edit">
           <input type="hidden" name="changes" id="ganttBulkChanges">
         </form>
+
+        {overview_html}
 
         <!-- Main layout -->
         <div class="card shadow-sm mb-3" style="overflow:hidden" id="ganttCard">
@@ -4652,6 +4869,27 @@ class ProjectTrackerHandler(Base):
               }}).catch(() => {{}});
             }}
           }});
+        }})();
+
+        // ── Live progress bar for in-progress tests ──────────────────────
+        (function() {{
+          function updateTestBars() {{
+            document.querySelectorAll('.test-progress-bar').forEach(function(bar) {{
+              var started  = bar.dataset.started;
+              var dur      = parseFloat(bar.dataset.duration);
+              if (!started || !dur) return;
+              var elapsed  = (Date.now() - new Date(started + 'Z').getTime()) / 3600000;
+              var pct      = Math.min(100, elapsed / dur * 100);
+              bar.style.width      = pct.toFixed(1) + '%';
+              bar.style.background = pct >= 100 ? '#16a34a' : '#f97316';
+              var txt = bar.parentElement.nextElementSibling;
+              if (txt && txt.classList.contains('test-progress-txt')) {{
+                txt.textContent = elapsed.toFixed(1) + 'h / ' + dur.toFixed(0) + 'h';
+              }}
+            }});
+          }}
+          updateTestBars();
+          setInterval(updateTestBars, 60000);
         }})();
         </script>
         """

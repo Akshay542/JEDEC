@@ -107,6 +107,19 @@ def init_db():
                 image_data  TEXT    NOT NULL DEFAULT '',
                 notes       TEXT    DEFAULT '',
                 created_at  TEXT    DEFAULT (datetime('now')))""",
+            """CREATE TABLE IF NOT EXISTS project_test_conditions (
+                project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                test_key     TEXT    NOT NULL,
+                condition_key TEXT   NOT NULL DEFAULT '',
+                PRIMARY KEY (project_id, test_key))""",
+            """CREATE TABLE IF NOT EXISTS project_test_tracker (
+                project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                test_key       TEXT    NOT NULL,
+                status         TEXT    NOT NULL DEFAULT 'pending',
+                started_at     TEXT    DEFAULT NULL,
+                completed_at   TEXT    DEFAULT NULL,
+                duration_hours REAL    DEFAULT NULL,
+                PRIMARY KEY (project_id, test_key))""",
         ]:
             try:
                 con.execute(stmt)
@@ -357,6 +370,65 @@ def bulk_add_gantt_tasks(pid: int, tasks: list[dict]):
                  t.get("test_key", ""),
                  t.get("start_week", 1), t.get("duration", 1),
                  "not_started", (i + 1) * 10)
+            )
+        _touch(con, pid)
+
+# ── Test Conditions (per-project selected condition per test) ─────────────────
+
+def get_test_conditions(pid: int) -> dict:
+    """Return {test_key: condition_key} for all saved conditions."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT test_key, condition_key FROM project_test_conditions WHERE project_id=?",
+            (pid,)
+        ).fetchall()
+        return {r["test_key"]: r["condition_key"] for r in rows}
+
+def save_test_conditions(pid: int, conditions: dict):
+    """Upsert {test_key: condition_key} mapping."""
+    with _conn() as con:
+        for key, val in conditions.items():
+            con.execute(
+                """INSERT INTO project_test_conditions (project_id, test_key, condition_key)
+                   VALUES (?,?,?)
+                   ON CONFLICT(project_id, test_key) DO UPDATE SET condition_key=excluded.condition_key""",
+                (pid, key.strip(), val.strip())
+            )
+        _touch(con, pid)
+
+# ── Test Tracker (start / complete per test) ───────────────────────────────────
+
+def get_test_tracker(pid: int) -> dict:
+    """Return {test_key: {status, started_at, completed_at, duration_hours}}."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM project_test_tracker WHERE project_id=?", (pid,)
+        ).fetchall()
+        return {r["test_key"]: dict(r) for r in rows}
+
+def upsert_test_tracker(pid: int, test_key: str, **kwargs):
+    """Insert or update a tracker row. kwargs: status, started_at, completed_at, duration_hours."""
+    allowed = {"status", "started_at", "completed_at", "duration_hours"}
+    fields  = {k: v for k, v in kwargs.items() if k in allowed}
+    with _conn() as con:
+        existing = con.execute(
+            "SELECT 1 FROM project_test_tracker WHERE project_id=? AND test_key=?",
+            (pid, test_key)
+        ).fetchone()
+        if existing:
+            if fields:
+                set_clause = ", ".join(f"{k}=?" for k in fields)
+                con.execute(
+                    f"UPDATE project_test_tracker SET {set_clause} WHERE project_id=? AND test_key=?",
+                    (*fields.values(), pid, test_key)
+                )
+        else:
+            fields.setdefault("status", "pending")
+            cols = ", ".join(["project_id", "test_key"] + list(fields.keys()))
+            vals = ", ".join(["?"] * (2 + len(fields)))
+            con.execute(
+                f"INSERT INTO project_test_tracker ({cols}) VALUES ({vals})",
+                (pid, test_key, *fields.values())
             )
         _touch(con, pid)
 
