@@ -303,11 +303,13 @@ STATUS_COLOR = {s[0]: s[2] for s in STATUS_OPTS + STATUS_OPTS_CHAR}
 def _page(active: str, part_type: str, body: str, title: str = "Package Reliability",
           project: dict = None, active_sub: str = "") -> str:
     top_nav_links = [
-        ("lookup",   "Test Lookup",                "/lookup"),
-        ("projects", "Project Design & Execution", "/projects"),
+        ("lookup",   "Test Lookup",           "/lookup"),
+        ("projects", "Qualification Projects", "/projects"),
     ]
     nav = "".join(
-        f'<li class="nav-item"><a class="nav-link {"active" if k==active else ""}" href="{href}">{label}</a></li>'
+        f'<li class="nav-item">'
+        f'<a class="nav-link {"active" if k==active else ""} df-topnav-link"'
+        f' href="{href}" data-tab="{k}">{label}</a></li>'
         for k, label, href in top_nav_links
     )
     # Project sub-nav (only rendered when inside a project)
@@ -590,6 +592,29 @@ def _page(active: str, part_type: str, body: str, title: str = "Package Reliabil
 {body}
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── Tab memory: remember last URL per top-level tab ─────────────────────────
+(function() {{
+  // Record current URL for whichever tab is active
+  var activeTab = '{active}';
+  if (activeTab) {{
+    sessionStorage.setItem('tabLast_' + activeTab, location.href);
+  }}
+
+  // Intercept top-nav clicks: if we have a saved URL for the target tab, go there
+  document.querySelectorAll('.df-topnav-link').forEach(function(a) {{
+    a.addEventListener('click', function(e) {{
+      var tab = a.dataset.tab;
+      if (tab === activeTab) return;   // already here, let default href handle it
+      var saved = sessionStorage.getItem('tabLast_' + tab);
+      if (saved) {{
+        e.preventDefault();
+        location.href = saved;
+      }}
+    }});
+  }});
+}})();
+</script>
 </body></html>"""
 
 
