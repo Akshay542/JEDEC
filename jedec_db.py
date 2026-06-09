@@ -122,6 +122,7 @@ def init_db():
                 PRIMARY KEY (project_id, test_key))""",
             "ALTER TABLE project_gantt ADD COLUMN n_mode TEXT DEFAULT 'auto'",
             "ALTER TABLE project_gantt ADD COLUMN n_custom INTEGER DEFAULT NULL",
+            "ALTER TABLE project_gantt ADD COLUMN parent_task_id INTEGER DEFAULT NULL",
         ]:
             try:
                 con.execute(stmt)
@@ -267,7 +268,8 @@ def list_gantt_tasks(pid: int) -> list[dict]:
 def add_gantt_task(pid: int, task_name: str, category: str = "",
                    test_key: str = "", start_week: int = 1, duration: int = 1,
                    status: str = "not_started",
-                   n_mode: str = "auto", n_custom: int | None = None) -> int:
+                   n_mode: str = "auto", n_custom: int | None = None,
+                   parent_task_id: int | None = None) -> int:
     with _conn() as con:
         max_order = con.execute(
             "SELECT COALESCE(MAX(sort_order),0) FROM project_gantt WHERE project_id=?",
@@ -276,18 +278,18 @@ def add_gantt_task(pid: int, task_name: str, category: str = "",
         cur = con.execute(
             """INSERT INTO project_gantt
                (project_id, task_name, category, test_key, start_week, duration,
-                status, sort_order, n_mode, n_custom)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                status, sort_order, n_mode, n_custom, parent_task_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, task_name.strip(), category.strip(), test_key.strip(),
              int(start_week), int(duration), status, max_order + 10,
-             n_mode, n_custom)
+             n_mode, n_custom, parent_task_id)
         )
         _touch(con, pid)
         return cur.lastrowid
 
 def update_gantt_task(tid: int, pid: int, **kwargs):
     allowed = {"task_name", "category", "test_key", "start_week", "duration",
-               "status", "sort_order", "n_mode", "n_custom"}
+               "status", "sort_order", "n_mode", "n_custom", "parent_task_id"}
     fields  = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return

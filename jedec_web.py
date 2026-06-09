@@ -3988,6 +3988,8 @@ class ProjectTrackerHandler(Base):
             _n_mode = self.get_argument("n_mode", "auto").strip() or "auto"
             _n_cust_raw = self.get_argument("n_custom", "").strip()
             _n_cust = int(_n_cust_raw) if _n_cust_raw.isdigit() else None
+            _par_raw2 = self.get_argument("parent_task_id", "").strip()
+            _par2 = int(_par_raw2) if _par_raw2.isdigit() else None
             _db.add_gantt_task(
                 p["id"],
                 task_name  = self.get_argument("task_name", "New Task"),
@@ -3997,6 +3999,7 @@ class ProjectTrackerHandler(Base):
                 status     = self.get_argument("status", "not_started"),
                 n_mode     = _n_mode,
                 n_custom   = _n_cust,
+                parent_task_id = _par2,
             )
         elif action == "undo":
             entry = _db.pop_gantt_history(p["id"])
@@ -4012,6 +4015,7 @@ class ProjectTrackerHandler(Base):
                         status=t["status"],
                         n_mode=t.get("n_mode","auto") or "auto",
                         n_custom=t.get("n_custom"),
+                        parent_task_id=t.get("parent_task_id"),
                     )
                 elif atype == "edit_task":
                     t = snapshot
@@ -4034,6 +4038,7 @@ class ProjectTrackerHandler(Base):
                             status=t["status"],
                             n_mode=t.get("n_mode","auto") or "auto",
                             n_custom=t.get("n_custom"),
+                            parent_task_id=t.get("parent_task_id"),
                         )
         elif action == "test_start":
             from datetime import datetime as _dt
@@ -4065,6 +4070,22 @@ class ProjectTrackerHandler(Base):
                     status="active",
                     completed_at=None,
                 )
+        elif action == "bulk_edit":
+            import json as _json
+            try:
+                changes = _json.loads(self.get_argument("changes", "[]"))
+                if changes:
+                    existing = _db.list_gantt_tasks(p["id"])
+                    _db.push_gantt_history(p["id"], "bulk_edit", existing)
+                    for ch in changes:
+                        if ch.get("duration", 0) > 0:
+                            _db.update_gantt_task(
+                                int(ch["id"]), p["id"],
+                                start_week=int(ch["start_week"]),
+                                duration=int(ch["duration"]),
+                            )
+            except Exception:
+                pass
         elif action == "reorder":
             import json as _json
             try:
@@ -4172,6 +4193,66 @@ class ProjectTrackerHandler(Base):
                 f'{label}</th>'
             )
 
+        # ── Constraint computation ──────────────────────────────────────────
+        import json as _json_
+        from collections import defaultdict as _dd_
+        _prep_sorted  = [t for t in tasks if (t.get("category") or "") == "Preparation"]
+        _stress_gnt   = [t for t in tasks if (t.get("category") or "") == "Stress"]
+        _analysis_gnt = [t for t in tasks if (t.get("category") or "") == "Analysis"]
+
+        _prep_chain_end = max(
+            (t["start_week"] + t["duration"] - 1 for t in _prep_sorted), default=0
+        )
+        _stress_end_by_id = {t["id"]: t["start_week"] + t["duration"] - 1 for t in _stress_gnt}
+
+        _ab = _dd_(list)
+        for _at in _analysis_gnt:
+            _ap = _at.get("parent_task_id")
+            if _ap: _ab[_ap].append(_at)
+        _reporting_gate = (
+            min(max(_at["start_week"] + _at["duration"] - 1 for _at in _g) for _g in _ab.values())
+            if _ab else _prep_chain_end
+        )
+
+        _task_data_py = {}
+        for t in tasks:
+            _cat = (t.get("category") or "").strip()
+            _tid = t["id"]
+            _bbg, _ = _GANTT_STATUS_COLORS.get(t["status"], ("#9ca3af", "#6b7280"))
+            _ent = {
+                "category":       _cat,
+                "start_week":     t["start_week"],
+                "duration":       t["duration"],
+                "color":          _bbg,
+                "parent_task_id": t.get("parent_task_id"),
+                "locked_start":   False,
+                "min_start":      1,
+                "prep_idx":       -1,
+            }
+            if _cat == "Preparation":
+                _ix = next((i for i, p in enumerate(_prep_sorted) if p["id"] == _tid), 0)
+                _ent["locked_start"] = True
+                _ent["prep_idx"]     = _ix
+                _ent["min_start"]    = (
+                    1 if _ix == 0
+                    else _prep_sorted[_ix-1]["start_week"] + _prep_sorted[_ix-1]["duration"]
+                )
+            elif _cat == "Stress":
+                _ent["min_start"] = _prep_chain_end + 1
+            elif _cat == "Analysis":
+                _pid2 = t.get("parent_task_id")
+                _ent["min_start"] = (_stress_end_by_id.get(_pid2, _prep_chain_end) if _pid2 else _prep_chain_end) + 1
+            elif _cat == "Reporting":
+                _ent["min_start"] = _reporting_gate + 1
+            _task_data_py[_tid] = _ent
+
+        _task_data_js    = _json_.dumps({str(k): v for k, v in _task_data_py.items()})
+        _prep_order_js   = _json_.dumps([t["id"] for t in _prep_sorted])
+        _stress_tasks_js = _json_.dumps([{"id": t["id"], "name": t["task_name"]} for t in _stress_gnt])
+        _stress_parent_opts = '<option value="">— select parent stress —</option>' + "".join(
+            f'<option value="{t["id"]}">{t["task_name"]}</option>' for t in _stress_gnt
+        )
+
         # ── Task sidebar rows ──────────────────────────────────────────────
         if tasks:
             task_rows = ""
@@ -4223,7 +4304,7 @@ class ProjectTrackerHandler(Base):
                                  f'padding-left:14px;margin-top:1px">'
                                  f'{cat_hint}{sep}{samp_pill}</span>')
                 task_rows += (
-                    f'<tr id="tr-{tid_}">'
+                    f'<tr id="tr-{tid_}" onclick="ganttSelectRow({tid_})" style="cursor:default">'
                     f'<td style="padding:6px 8px;max-width:220px" title="{t["task_name"]}">'
                     f'<span class="gantt-drag-handle" title="Drag to reorder" '
                     f'style="cursor:grab;color:#d1d5db;margin-right:4px;font-size:.85rem;'
@@ -4243,7 +4324,8 @@ class ProjectTrackerHandler(Base):
                     f"openEditModal({tid_},'{safe_name}','{t['category']}',"
                     f"{t['start_week']},{t['duration']},'{t['status']}',"
                     f"'{t.get('n_mode','auto') or 'auto'}',"
-                    f"{t['n_custom'] if t.get('n_custom') is not None else 'null'})\""
+                    f"{t['n_custom'] if t.get('n_custom') is not None else 'null'},"
+                    f"{t.get('parent_task_id') or 'null'})\""
                     f'>Edit</button> '
                     f'<form method="post" action="/projects/{pid}/tracker/task/{tid_}/delete"'
                     f' class="d-inline" onsubmit="return confirm(\'Delete task?\')">'
@@ -4273,7 +4355,7 @@ class ProjectTrackerHandler(Base):
                           else "border-radius:4px 0 0 4px;" if is_start
                           else "border-radius:0 4px 4px 0;" if is_end else "")
                     now_border = "border-left:2px solid #f59e0b;" if is_now else ""
-                    cells += (f'<td{now_attr}'
+                    cells += (f'<td data-tid="{t["id"]}" data-week="{w}"{now_attr}'
                                f' style="background:{bg};{br}{now_border}'
                                f'padding:0;height:26px"></td>')
                 else:
@@ -4281,7 +4363,7 @@ class ProjectTrackerHandler(Base):
                     bl      = "border-left:2px solid #f59e0b;" if is_now else (
                               "border-left:2px solid #d1d5db;" if w % 4 == 1 else
                               "border-left:1px solid #e5e7eb;")
-                    cells += (f'<td{now_attr}'
+                    cells += (f'<td data-tid="{t["id"]}" data-week="{w}"{now_attr}'
                                f' style="background:{bg_cell};{bl}padding:0;height:26px"></td>')
             gantt_rows += f'<tr data-gantt-row="{t["id"]}">{cells}</tr>'
 
@@ -4552,6 +4634,12 @@ class ProjectTrackerHandler(Base):
                     <input type="number" class="form-control form-control-sm" name="n_custom"
                            id="e_ncust" min="1" placeholder="e.g. 45">
                   </div>
+                  <div class="mt-3" id="e_parent_div" style="display:none">
+                    <label class="form-label" style="font-size:.83rem">Parent Stress Task</label>
+                    <select class="form-select form-select-sm" name="parent_task_id" id="e_parent_sel">
+                      <option value="">— select —</option>
+                    </select>
+                  </div>
                 </div>
                 <div class="modal-footer">
                   <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -4570,11 +4658,33 @@ class ProjectTrackerHandler(Base):
             {undo_btn}
             {seed_btn}
             {clear_btn}
+            <!-- Edit mode -->
+            <button id="ganttEditBtn" class="btn btn-sm ms-1" onclick="ganttEnterEdit()"
+              style="border:1px solid #c4b5fd;color:#6d28d9;background:#fff;font-size:.8rem">
+              <i class="bi bi-pencil-square me-1"></i>Edit
+            </button>
+            <button id="ganttSaveBtn" class="btn btn-sm ms-1" onclick="ganttSave()"
+              style="display:none;background:#16a34a;color:#fff;border:none;font-size:.8rem">
+              <i class="bi bi-check2 me-1"></i>Save
+            </button>
+            <button id="ganttDelSelBtn" class="btn btn-sm ms-1" onclick="ganttDeleteSel()"
+              style="display:none;border:1px solid #fca5a5;color:#dc2626;background:#fff;font-size:.8rem">
+              <i class="bi bi-eraser me-1"></i>Delete
+            </button>
             <button class="btn btn-sm ms-1" style="border:1px solid var(--df-border);font-size:.8rem"
               data-bs-toggle="collapse" data-bs-target="#addTaskPanel">
               <i class="bi bi-plus-lg me-1"></i>Add Task
             </button>
           </div>
+        </div>
+        <!-- Edit mode hint bar -->
+        <div id="editHint" style="display:none;font-size:.78rem;color:#6d28d9;
+          background:#f5f3ff;border:1px solid #c4b5fd;border-radius:6px;
+          padding:6px 12px;margin-bottom:8px">
+          <i class="bi bi-pencil-square me-1"></i>
+          <strong>Edit mode:</strong> Click a task row to select it.
+          Drag <strong>right</strong> to add weeks · Drag <strong>left</strong> to mark for deletion · Press <kbd>Delete</kbd> to remove marked cells.
+          Preparation steps cascade automatically. Click <strong>Save</strong> when done.
         </div>
 
         <!-- Add task panel -->
@@ -4627,6 +4737,12 @@ class ProjectTrackerHandler(Base):
                 <input type="number" class="form-control form-control-sm" name="n_custom"
                        id="add_ncust" min="1" placeholder="—">
               </div>
+              <div class="col-12 col-md-3" id="add_parent_div" style="display:none">
+                <label class="form-label mb-1" style="font-size:.78rem">Parent Stress Task</label>
+                <select class="form-select form-select-sm" name="parent_task_id" id="add_parent_sel">
+                  {_stress_parent_opts}
+                </select>
+              </div>
               <div class="col-12 col-md-2">
                 <button class="btn btn-sm w-100"
                   style="background:var(--df-accent);color:#fff;border:none">Add Task</button>
@@ -4634,6 +4750,12 @@ class ProjectTrackerHandler(Base):
             </form>
           </div>
         </div>
+
+        <!-- Bulk save form (hidden) -->
+        <form id="ganttBulkForm" method="post" action="/projects/{pid}/tracker" style="display:none">
+          <input type="hidden" name="action" value="bulk_edit">
+          <input type="hidden" name="changes" id="ganttBulkChanges">
+        </form>
 
         {overview_html}
 
@@ -4677,46 +4799,75 @@ class ProjectTrackerHandler(Base):
 
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
         <script>
-        // ── Edit-task modal ──────────────────────────────────────────────────────
-        // Map category → default n_mode
-        var CAT_N_DEFAULT = {{
-          'Preparation': 'total',
-          'Reporting':   'total',
-          'Stress':      'test',
-          'Analysis':    'test',
-        }};
+        // ── Server data ───────────────────────────────────────────────────────────
+        const TASK_DATA    = {_task_data_js};
+        const PREP_ORDER   = {_prep_order_js};
+        const STRESS_TASKS = {_stress_tasks_js};
+        let   prepChainEnd = {_prep_chain_end};
 
+        // ── State ─────────────────────────────────────────────────────────────────
+        const filledWeeks = {{}};
+        const dirtyTids   = new Set();
+        let   selTid      = null;
+        let   drag        = null;
+        const delSel      = new Set();
+        let   editActive  = false;
+
+        // Initialise filledWeeks from server data
+        Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+          const s = new Set();
+          for (let w = d.start_week; w < d.start_week + d.duration; w++) s.add(w);
+          filledWeeks[tid] = s;
+        }});
+
+        // ── n_mode / category helpers ────────────────────────────────────────────
+        var CAT_N_DEFAULT = {{
+          'Preparation': 'total', 'Reporting': 'total',
+          'Stress': 'test',       'Analysis':  'test',
+        }};
         function toggleNcust() {{
-          var mode = document.getElementById('e_nmode').value;
           document.getElementById('e_ncust_div').style.display =
-            mode === 'custom' ? '' : 'none';
+            document.getElementById('e_nmode').value === 'custom' ? '' : 'none';
         }}
         function toggleAddNcust(sel) {{
           document.getElementById('add_ncust_div').style.display =
             sel.value === 'custom' ? '' : 'none';
         }}
-
-        // When category changes in the Edit modal, auto-set n_mode default
-        // only if the user hasn't explicitly picked a non-auto mode yet
         function onEditCatChange() {{
-          var cat   = document.getElementById('e_cat').value;
-          var nmSel = document.getElementById('e_nmode');
-          var def   = CAT_N_DEFAULT[cat];
-          if (def) nmSel.value = def;
+          const cat = document.getElementById('e_cat').value;
+          const def = CAT_N_DEFAULT[cat];
+          if (def) document.getElementById('e_nmode').value = def;
           toggleNcust();
+          const pd = document.getElementById('e_parent_div');
+          if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
+          if (cat === 'Analysis') populateEditParentSel(null);
         }}
-        // Same for the Add Task panel
         function onAddCatChange() {{
-          var cat   = document.getElementById('add_cat').value;
-          var nmSel = document.querySelector('#addTaskPanel select[name="n_mode"]');
-          if (!nmSel) return;
-          var def = CAT_N_DEFAULT[cat];
-          if (def) nmSel.value = def;
-          document.getElementById('add_ncust_div').style.display =
-            nmSel.value === 'custom' ? '' : 'none';
+          const cat = document.getElementById('add_cat').value;
+          const nmSel = document.querySelector('#addTaskPanel select[name="n_mode"]');
+          if (nmSel) {{
+            const def = CAT_N_DEFAULT[cat];
+            if (def) nmSel.value = def;
+            document.getElementById('add_ncust_div').style.display =
+              nmSel.value === 'custom' ? '' : 'none';
+          }}
+          const pd = document.getElementById('add_parent_div');
+          if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
+        }}
+        function populateEditParentSel(selectedId) {{
+          const sel = document.getElementById('e_parent_sel');
+          if (!sel) return;
+          sel.innerHTML = '<option value="">— select parent stress task —</option>';
+          STRESS_TASKS.forEach(t => {{
+            const o = document.createElement('option');
+            o.value = t.id; o.textContent = t.name;
+            if (selectedId && parseInt(t.id) === parseInt(selectedId)) o.selected = true;
+            sel.appendChild(o);
+          }});
         }}
 
-        function openEditModal(tid, name, cat, sw, dur, status, nmode, ncust) {{
+        // ── Edit modal ────────────────────────────────────────────────────────────
+        function openEditModal(tid, name, cat, sw, dur, status, nmode, ncust, parentId) {{
           document.getElementById('e_name').value   = name;
           document.getElementById('e_cat').value    = cat;
           document.getElementById('e_sw').value     = sw;
@@ -4726,42 +4877,251 @@ class ProjectTrackerHandler(Base):
           document.getElementById('e_ncust').value  =
             (ncust !== null && ncust !== undefined) ? ncust : '';
           toggleNcust();
+          const pd = document.getElementById('e_parent_div');
+          if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
+          if (cat === 'Analysis') populateEditParentSel(parentId);
           document.getElementById('editForm').action =
             '/projects/{pid}/tracker/task/' + tid + '/edit';
           bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
         }}
 
-        // ── Keyboard shortcuts ───────────────────────────────────────────────────
-        document.addEventListener('keydown', function(e) {{
-          // Cmd+Z / Ctrl+Z → undo
+        // ── Password-protected edit mode ─────────────────────────────────────────
+        function ganttEnterEdit() {{
+          var pw = prompt('Enter password to edit the schedule:');
+          if (pw === null) return;
+          if (pw !== 'password') {{ alert('Incorrect password.'); return; }}
+          editActive = true;
+          document.getElementById('ganttEditBtn').style.cssText =
+            'border:1px solid #7c3aed;color:#6d28d9;background:#f5f3ff;font-size:.8rem';
+          document.getElementById('ganttSaveBtn').style.display = '';
+          document.getElementById('editHint').style.display = '';
+          document.querySelectorAll('#ganttSidebody tr').forEach(r => r.style.cursor = 'pointer');
+        }}
+        function ganttDeactivateEdit() {{
+          editActive = false;
+          if (selTid !== null) {{
+            const prev = document.getElementById('tr-' + selTid);
+            if (prev) prev.style.background = '';
+          }}
+          selTid = null; drag = null; delSel.clear();
+          document.getElementById('ganttEditBtn').style.cssText =
+            'border:1px solid #c4b5fd;color:#6d28d9;background:#fff;font-size:.8rem';
+          document.getElementById('ganttSaveBtn').style.display = 'none';
+          document.getElementById('ganttDelSelBtn').style.display = 'none';
+          document.getElementById('editHint').style.display = 'none';
+          document.querySelectorAll('#ganttSidebody tr').forEach(r => r.style.cursor = '');
+          ganttRenderAll();
+        }}
+
+        // ── Row selection ─────────────────────────────────────────────────────────
+        function ganttSelectRow(tid) {{
+          if (!editActive) return;
+          if (selTid !== null) {{
+            const prev = document.getElementById('tr-' + selTid);
+            if (prev) prev.style.background = '';
+          }}
+          delSel.clear(); ganttUpdateDelBtn();
+          selTid = (String(tid) === String(selTid)) ? null : String(tid);
+          if (selTid !== null) {{
+            const row = document.getElementById('tr-' + selTid);
+            if (row) row.style.background = '#fef3c7';
+          }}
+          ganttRenderAll();
+        }}
+
+        // ── Prep cascade ──────────────────────────────────────────────────────────
+        function cascadePrep(fromIdx) {{
+          for (let i = fromIdx; i < PREP_ORDER.length; i++) {{
+            const tid    = String(PREP_ORDER[i]);
+            const prevEnd = i === 0 ? 0 : (() => {{
+              const pfw = filledWeeks[String(PREP_ORDER[i-1])] || new Set();
+              return pfw.size ? Math.max(...pfw) : 0;
+            }})();
+            const newStart = prevEnd + 1;
+            const fw  = filledWeeks[tid] || new Set();
+            const dur = fw.size
+              ? Math.max(...fw) - Math.min(...fw) + 1
+              : (TASK_DATA[tid] ? TASK_DATA[tid].duration : 1);
+            const newFW = new Set();
+            for (let w = newStart; w < newStart + dur; w++) newFW.add(w);
+            filledWeeks[tid] = newFW;
+            dirtyTids.add(PREP_ORDER[i]);
+          }}
+          prepChainEnd = PREP_ORDER.length === 0 ? 0 : (() => {{
+            const lfw = filledWeeks[String(PREP_ORDER[PREP_ORDER.length-1])] || new Set();
+            return lfw.size ? Math.max(...lfw) : 0;
+          }})();
+        }}
+
+        // ── Render ────────────────────────────────────────────────────────────────
+        function ganttRenderRow(tid) {{
+          const row = document.querySelector('[data-gantt-row="' + tid + '"]');
+          if (!row) return;
+          const data  = TASK_DATA[String(tid)] || {{}};
+          const fw    = filledWeeks[String(tid)] || new Set();
+          const col   = data.color || '#9ca3af';
+          const isSel = String(tid) === String(selTid);
+          const minS  = data.min_start || 1;
+          row.querySelectorAll('td').forEach(cell => {{
+            const w = parseInt(cell.dataset.week);
+            if (!w) return;
+            const isFill   = fw.has(w);
+            const isNow    = cell.dataset.now === '1';
+            const inDelSel = isSel && delSel.has(w);
+            let inFill = false, inDel = false;
+            if (drag && String(drag.tid) === String(tid) && drag.mode) {{
+              const lo = Math.min(drag.startW, drag.curW);
+              const hi = Math.max(drag.startW, drag.curW);
+              if (w >= lo && w <= hi) {{
+                inFill = drag.mode === 'fill';
+                inDel  = drag.mode === 'delete';
+              }}
+            }}
+            let bg, cur;
+            if      (inFill && w >= minS) {{ bg = '#93c5fd'; cur = 'crosshair'; }}
+            else if (inDel || inDelSel)   {{ bg = '#fca5a5'; cur = 'pointer'; }}
+            else if (isFill)              {{ bg = col; cur = editActive && isSel ? 'pointer' : 'default'; }}
+            else if (w < minS && editActive && isSel) {{ bg = '#fee2e2'; cur = 'not-allowed'; }}
+            else if (isNow)              {{ bg = '#fef9c3'; cur = editActive && isSel && w >= minS ? 'crosshair' : 'default'; }}
+            else                          {{ bg = isSel && editActive ? '#ede9fe' : '#f9fafb';
+                                            cur = editActive && isSel && w >= minS ? 'crosshair' : 'default'; }}
+            cell.style.background = bg;
+            cell.style.cursor     = cur;
+          }});
+        }}
+        function ganttRenderAll() {{
+          Object.keys(TASK_DATA).forEach(tid => ganttRenderRow(tid));
+        }}
+
+        // ── Drag ──────────────────────────────────────────────────────────────────
+        const chartTable = document.getElementById('ganttChartTable');
+        if (chartTable) {{
+          chartTable.addEventListener('mousedown', e => {{
+            if (!editActive || !selTid) return;
+            const cell = e.target.closest('[data-tid]');
+            if (!cell || String(cell.dataset.tid) !== String(selTid)) return;
+            e.preventDefault();
+            const w = parseInt(cell.dataset.week);
+            drag = {{tid: selTid, startW: w, curW: w, mode: null}};
+            ganttRenderRow(selTid);
+          }});
+          chartTable.addEventListener('mousemove', e => {{
+            if (!drag) return;
+            const cell = e.target.closest('[data-tid]');
+            if (!cell) return;
+            const w = parseInt(cell.dataset.week);
+            if (drag.mode === null && w !== drag.startW)
+              drag.mode = w > drag.startW ? 'fill' : 'delete';
+            if (w !== drag.curW) {{ drag.curW = w; ganttRenderRow(drag.tid); }}
+          }});
+        }}
+        document.addEventListener('mouseup', () => {{
+          if (!drag) return;
+          const tid  = String(drag.tid);
+          const data = TASK_DATA[tid] || {{}};
+          const fw   = filledWeeks[tid] || new Set();
+          const minS = data.min_start || 1;
+          const lo   = Math.min(drag.startW, drag.curW);
+          const hi   = Math.max(drag.startW, drag.curW);
+          const mode = drag.mode || (fw.has(drag.startW) ? 'delete' : 'fill');
+
+          if (mode === 'fill') {{
+            if (data.locked_start) {{
+              // Prep: extend end to hi, start locked at minS
+              const newEnd = Math.max(hi, minS);
+              const newFW = new Set();
+              for (let w = minS; w <= newEnd; w++) newFW.add(w);
+              filledWeeks[tid] = newFW;
+            }} else {{
+              for (let w = Math.max(lo, minS); w <= hi; w++) fw.add(w);
+            }}
+            dirtyTids.add(parseInt(tid));
+            const idx = data.prep_idx !== undefined ? data.prep_idx : -1;
+            if (data.category === 'Preparation' && idx >= 0) {{
+              cascadePrep(idx + 1);
+              ganttRenderAll();
+            }}
+          }} else {{
+            for (let w = lo; w <= hi; w++) {{ if (fw.has(w)) delSel.add(w); }}
+            ganttUpdateDelBtn();
+          }}
+          drag = null;
+          if (data.category !== 'Preparation') ganttRenderRow(tid);
+        }});
+
+        // ── Delete ────────────────────────────────────────────────────────────────
+        function ganttDeleteSel() {{
+          if (!selTid) return;
+          const tid  = String(selTid);
+          const data = TASK_DATA[tid] || {{}};
+          const fw   = filledWeeks[tid] || new Set();
+          const minS = data.min_start || 1;
+          if (data.locked_start) {{
+            const marked = [...delSel].filter(w => fw.has(w));
+            if (marked.length) {{
+              const newEnd = Math.min(...marked) - 1;
+              const newFW = new Set();
+              if (newEnd >= minS) for (let w = minS; w <= newEnd; w++) newFW.add(w);
+              filledWeeks[tid] = newFW;
+              const idx = data.prep_idx !== undefined ? data.prep_idx : -1;
+              if (idx >= 0) cascadePrep(idx + 1);
+              ganttRenderAll();
+            }}
+          }} else {{
+            delSel.forEach(w => fw.delete(w));
+            ganttRenderRow(tid);
+          }}
+          delSel.clear(); ganttUpdateDelBtn();
+          dirtyTids.add(parseInt(tid));
+        }}
+        function ganttUpdateDelBtn() {{
+          const btn = document.getElementById('ganttDelSelBtn');
+          if (btn) btn.style.display = delSel.size > 0 ? '' : 'none';
+        }}
+
+        // ── Keyboard shortcuts ────────────────────────────────────────────────────
+        document.addEventListener('keydown', e => {{
           if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {{
             const uf = document.getElementById('undoForm');
             if (uf) {{ e.preventDefault(); uf.submit(); }}
           }}
+          if ((e.key === 'Delete' || e.key === 'Backspace') && editActive && delSel.size > 0) {{
+            const tag = document.activeElement ? document.activeElement.tagName : '';
+            if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {{
+              e.preventDefault(); ganttDeleteSel();
+            }}
+          }}
         }});
 
-        // ── Drag-to-reorder sidebar rows ───────────────────────────────────
+        // ── Save ──────────────────────────────────────────────────────────────────
+        function ganttSave() {{
+          if (delSel.size > 0) ganttDeleteSel();
+          const changes = [];
+          dirtyTids.forEach(tid => {{
+            const fw = filledWeeks[String(tid)];
+            if (!fw || fw.size === 0) return;
+            const sw = Math.min(...fw), ew = Math.max(...fw);
+            changes.push({{id: tid, start_week: sw, duration: ew - sw + 1}});
+          }});
+          if (changes.length === 0) {{ ganttDeactivateEdit(); return; }}
+          document.getElementById('ganttBulkChanges').value = JSON.stringify(changes);
+          document.getElementById('ganttBulkForm').submit();
+        }}
+
+        // ── Drag-to-reorder sidebar ───────────────────────────────────────────────
         (function() {{
-          const sideBody = document.getElementById('ganttSidebody');
+          const sideBody  = document.getElementById('ganttSidebody');
           const chartBody = document.getElementById('ganttChartBody');
           if (!sideBody || typeof Sortable === 'undefined') return;
-
           Sortable.create(sideBody, {{
-            handle: '.gantt-drag-handle',
-            animation: 150,
-            ghostClass: 'sortable-ghost',
+            handle: '.gantt-drag-handle', animation: 150, ghostClass: 'sortable-ghost',
             onEnd: function() {{
-              // Collect new order from sidebar
               const rows = sideBody.querySelectorAll('tr[id^="tr-"]');
               const orderedIds = [...rows].map(r => r.id.replace('tr-', ''));
-
-              // Sync chart body rows to same order
               orderedIds.forEach(tid => {{
                 const cr = chartBody.querySelector('[data-gantt-row="' + tid + '"]');
                 if (cr) chartBody.appendChild(cr);
               }});
-
-              // Persist new order to server (fire-and-forget)
               fetch('/projects/{pid}/tracker', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
@@ -4771,21 +5131,19 @@ class ProjectTrackerHandler(Base):
           }});
         }})();
 
-        // ── Live progress bar for in-progress tests ──────────────────────
+        // ── Live progress bars ────────────────────────────────────────────────────
         (function() {{
           function updateTestBars() {{
-            document.querySelectorAll('.test-progress-bar').forEach(function(bar) {{
-              var started  = bar.dataset.started;
-              var dur      = parseFloat(bar.dataset.duration);
+            document.querySelectorAll('.test-progress-bar').forEach(bar => {{
+              var started = bar.dataset.started, dur = parseFloat(bar.dataset.duration);
               if (!started || !dur) return;
-              var elapsed  = (Date.now() - new Date(started + 'Z').getTime()) / 3600000;
-              var pct      = Math.min(100, elapsed / dur * 100);
-              bar.style.width      = pct.toFixed(1) + '%';
+              var elapsed = (Date.now() - new Date(started + 'Z').getTime()) / 3600000;
+              var pct = Math.min(100, elapsed / dur * 100);
+              bar.style.width = pct.toFixed(1) + '%';
               bar.style.background = pct >= 100 ? '#16a34a' : '#f97316';
               var txt = bar.parentElement.nextElementSibling;
-              if (txt && txt.classList.contains('test-progress-txt')) {{
+              if (txt && txt.classList.contains('test-progress-txt'))
                 txt.textContent = elapsed.toFixed(1) + 'h / ' + dur.toFixed(0) + 'h';
-              }}
             }});
           }}
           updateTestBars();
@@ -4818,6 +5176,8 @@ class ProjectTaskHandler(Base):
             _nm = self.get_argument("n_mode", "auto").strip() or "auto"
             _nc_raw = self.get_argument("n_custom", "").strip()
             _nc = int(_nc_raw) if _nc_raw.isdigit() else None
+            _par_raw = self.get_argument("parent_task_id", "").strip()
+            _par = int(_par_raw) if _par_raw.isdigit() else None
             _db.update_gantt_task(
                 tid, p["id"],
                 task_name  = self.get_argument("task_name",  ""),
@@ -4827,6 +5187,7 @@ class ProjectTaskHandler(Base):
                 status     = self.get_argument("status", "not_started"),
                 n_mode     = _nm,
                 n_custom   = _nc,
+                parent_task_id = _par,
             )
         self.redirect(f"/projects/{p['id']}/tracker")
 
