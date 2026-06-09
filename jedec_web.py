@@ -4757,6 +4757,11 @@ class ProjectTrackerHandler(Base):
               data-bs-toggle="collapse" data-bs-target="#addTaskPanel">
               <i class="bi bi-plus-lg me-1"></i>Add Task
             </button>
+            <a href="/projects/{pid}/tracker/csv"
+               class="btn btn-sm ms-1" style="border:1px solid var(--df-border);font-size:.8rem"
+               download>
+              <i class="bi bi-download me-1"></i>CSV
+            </a>
           </div>
         </div>
         <!-- Edit mode hint bar -->
@@ -5549,6 +5554,79 @@ class ProjectTaskHandler(Base):
         self.redirect(f"/projects/{p['id']}/tracker")
 
 
+class ProjectTrackerCsvHandler(Base):
+    """Return the GANTT schedule as a downloadable CSV."""
+
+    def get(self, pid):
+        import csv as _csv
+        import io as _io
+        from datetime import date as _date, timedelta as _td
+
+        p = _db.get_project(int(pid))
+        if not p:
+            self.send_error(404); return
+
+        tasks = _db.list_gantt_tasks(p["id"])
+        meta  = _db.get_meta(p["id"])
+
+        # Calendar anchor (same logic as _render_gantt)
+        start_str = (meta.get("gantt_start_date") or "").strip()
+        try:
+            anchor = _date.fromisoformat(start_str)
+        except ValueError:
+            anchor = _date.today()
+            anchor = anchor - _td(days=anchor.weekday())
+
+        def week_to_date(wk: int) -> str:
+            return (anchor + _td(weeks=wk - 1)).strftime("%Y-%m-%d")
+
+        status_labels = {
+            "not_started": "Not Started",
+            "in_progress":  "In Progress",
+            "complete":     "Complete",
+            "blocked":      "Blocked",
+            "na":           "N/A",
+        }
+
+        # Build parent-id → task-name lookup for the Analysis "Parent" column
+        id_to_name = {t["id"]: t["task_name"] for t in tasks}
+
+        buf = _io.StringIO()
+        writer = _csv.writer(buf)
+        writer.writerow([
+            "#", "Task Name", "Category", "Status",
+            "Start Week", "End Week", "Duration (wks)",
+            "Start Date", "End Date",
+            "Sample Size Mode", "Custom n",
+            "Parent Task",
+        ])
+        for i, t in enumerate(tasks, 1):
+            sw  = t["start_week"]
+            dur = t["duration"]
+            ew  = sw + dur - 1
+            n_mode = t.get("n_mode") or "auto"
+            writer.writerow([
+                i,
+                t["task_name"],
+                t.get("category") or "",
+                status_labels.get(t.get("status", "not_started"), t.get("status", "")),
+                sw,
+                ew,
+                dur,
+                week_to_date(sw),
+                week_to_date(ew),
+                n_mode,
+                t.get("n_custom") or "",
+                id_to_name.get(t.get("parent_task_id"), ""),
+            ])
+
+        safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in p["name"])
+        filename  = f"schedule_{safe_name}.csv"
+        self.set_header("Content-Type", "text/csv; charset=utf-8")
+        self.set_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.finish(buf.getvalue())
+
+
 # ── App routing & entry point ─────────────────────────────────────────────────
 
 def make_app():
@@ -5577,6 +5655,7 @@ def make_app():
             (r"/projects/(\d+)/csam/(\d+)/thumb",    ProjectCsamThumbHandler),
             (r"/projects/(\d+)/csam/(\d+)/delete",   ProjectCsamDeleteHandler),
             (r"/projects/(\d+)/tracker",             ProjectTrackerHandler),
+            (r"/projects/(\d+)/tracker/csv",         ProjectTrackerCsvHandler),
             (r"/projects/(\d+)/tracker/task/(\d+)/(edit|delete)", ProjectTaskHandler),
             # ── Static spec PDFs ────────────────────────────────────────────
             (r"/specs/(.*)",                         tornado.web.StaticFileHandler,
