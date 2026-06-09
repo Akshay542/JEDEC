@@ -4065,23 +4065,6 @@ class ProjectTrackerHandler(Base):
                     status="active",
                     completed_at=None,
                 )
-        elif action == "bulk_edit":
-            import json as _json
-            try:
-                changes = _json.loads(self.get_argument("changes", "[]"))
-                if changes:
-                    # Push undo snapshot before making changes
-                    existing = _db.list_gantt_tasks(p["id"])
-                    _db.push_gantt_history(p["id"], "bulk_edit", existing)
-                    for ch in changes:
-                        if ch.get("duration", 0) > 0:
-                            _db.update_gantt_task(
-                                int(ch["id"]), p["id"],
-                                start_week=int(ch["start_week"]),
-                                duration=int(ch["duration"]),
-                            )
-            except Exception:
-                pass  # malformed JSON or missing fields — silently ignore
         elif action == "reorder":
             import json as _json
             try:
@@ -4240,7 +4223,7 @@ class ProjectTrackerHandler(Base):
                                  f'padding-left:14px;margin-top:1px">'
                                  f'{cat_hint}{sep}{samp_pill}</span>')
                 task_rows += (
-                    f'<tr id="tr-{tid_}" onclick="ganttSelectRow({tid_})" style="cursor:default">'
+                    f'<tr id="tr-{tid_}">'
                     f'<td style="padding:6px 8px;max-width:220px" title="{t["task_name"]}">'
                     f'<span class="gantt-drag-handle" title="Drag to reorder" '
                     f'style="cursor:grab;color:#d1d5db;margin-right:4px;font-size:.85rem;'
@@ -4275,14 +4258,8 @@ class ProjectTrackerHandler(Base):
                          ' style="font-size:.85rem">No tasks yet.</td></tr>')
 
         # ── GANTT bar rows ─────────────────────────────────────────────────
-        # Also build JS task-position data for edit mode
-        task_pos_entries = []
         gantt_rows = ""
         for t in tasks:
-            bar_bg, _ = _GANTT_STATUS_COLORS.get(t["status"], ("#9ca3af","#6b7280"))
-            task_pos_entries.append(
-                f'{t["id"]}:{{sw:{t["start_week"]},dur:{t["duration"]},color:"{bar_bg}"}}'
-            )
             cells = ""
             for w in range(1, n_weeks + 1):
                 in_range = t["start_week"] <= w <= t["start_week"] + t["duration"] - 1
@@ -4291,28 +4268,26 @@ class ProjectTrackerHandler(Base):
                 is_now   = (current_week == w)
                 now_attr = ' data-now="1"' if is_now else ""
                 if in_range:
-                    bg, fg = _GANTT_STATUS_COLORS.get(t["status"], ("#9ca3af","#6b7280"))
+                    bg, _ = _GANTT_STATUS_COLORS.get(t["status"], ("#9ca3af","#6b7280"))
                     br = ("border-radius:4px;" if (is_start and is_end)
                           else "border-radius:4px 0 0 4px;" if is_start
                           else "border-radius:0 4px 4px 0;" if is_end else "")
                     now_border = "border-left:2px solid #f59e0b;" if is_now else ""
-                    cells += (f'<td data-tid="{t["id"]}" data-week="{w}"{now_attr}'
+                    cells += (f'<td{now_attr}'
                                f' style="background:{bg};{br}{now_border}'
                                f'padding:0;height:26px"></td>')
                 else:
-                    bg_cell   = "#fef9c3" if is_now else "#f9fafb"
-                    bl        = "border-left:2px solid #f59e0b;" if is_now else (
-                                "border-left:2px solid #d1d5db;" if w % 4 == 1 else
-                                "border-left:1px solid #e5e7eb;")
-                    cells += (f'<td data-tid="{t["id"]}" data-week="{w}"{now_attr}'
+                    bg_cell = "#fef9c3" if is_now else "#f9fafb"
+                    bl      = "border-left:2px solid #f59e0b;" if is_now else (
+                              "border-left:2px solid #d1d5db;" if w % 4 == 1 else
+                              "border-left:1px solid #e5e7eb;")
+                    cells += (f'<td{now_attr}'
                                f' style="background:{bg_cell};{bl}padding:0;height:26px"></td>')
             gantt_rows += f'<tr data-gantt-row="{t["id"]}">{cells}</tr>'
 
         if not tasks:
             gantt_rows = (f'<tr><td colspan="{n_weeks}" class="text-center text-muted py-4"'
                           f' style="font-size:.85rem">Add tasks to see the chart.</td></tr>')
-
-        task_pos_js = "{" + ",".join(task_pos_entries) + "}"
 
         # ── Options HTML ───────────────────────────────────────────────────
         status_opts_html = "".join(
@@ -4546,22 +4521,14 @@ class ProjectTrackerHandler(Base):
                   </div>
                   <div class="row g-2">
                     <div class="col">
-                      <label class="form-label" style="font-size:.83rem">
-                        Start Week
-                        <span class="text-muted" style="font-size:.72rem;font-weight:400"> — set via Edit mode</span>
-                      </label>
+                      <label class="form-label" style="font-size:.83rem">Start Week</label>
                       <input type="number" class="form-control form-control-sm" name="start_week" id="e_sw"
-                             min="1" max="104" readonly
-                             style="background:#f3f4f6;color:#6b7280;cursor:not-allowed">
+                             min="1" max="104">
                     </div>
                     <div class="col">
-                      <label class="form-label" style="font-size:.83rem">
-                        Duration (weeks)
-                        <span class="text-muted" style="font-size:.72rem;font-weight:400"> — set via Edit mode</span>
-                      </label>
+                      <label class="form-label" style="font-size:.83rem">Duration (weeks)</label>
                       <input type="number" class="form-control form-control-sm" name="duration" id="e_dur"
-                             min="1" max="52" readonly
-                             style="background:#f3f4f6;color:#6b7280;cursor:not-allowed">
+                             min="1" max="104">
                     </div>
                   </div>
                   <div class="mt-3">
@@ -4603,36 +4570,11 @@ class ProjectTrackerHandler(Base):
             {undo_btn}
             {seed_btn}
             {clear_btn}
-            <!-- Edit mode toggle -->
-            <button id="ganttEditBtn" class="btn btn-sm ms-1" onclick="ganttToggleEdit()"
-              style="border:1px solid #c4b5fd;color:#6d28d9;background:#fff;font-size:.8rem">
-              <i class="bi bi-pencil-square me-1"></i>Edit
-            </button>
-            <!-- Save button (hidden until edit mode active) -->
-            <button id="ganttSaveBtn" class="btn btn-sm ms-1" onclick="ganttSave()"
-              style="display:none;background:#16a34a;color:#fff;border:none;font-size:.8rem">
-              <i class="bi bi-check2 me-1"></i>Save
-            </button>
-            <!-- Delete selection (hidden until cells selected) -->
-            <button id="ganttDelSelBtn" class="btn btn-sm ms-1" onclick="ganttDeleteSel()"
-              style="display:none;border:1px solid #fca5a5;color:#dc2626;background:#fff;font-size:.8rem">
-              <i class="bi bi-eraser me-1"></i>Delete
-            </button>
             <button class="btn btn-sm ms-1" style="border:1px solid var(--df-border);font-size:.8rem"
               data-bs-toggle="collapse" data-bs-target="#addTaskPanel">
               <i class="bi bi-plus-lg me-1"></i>Add Task
             </button>
           </div>
-        </div>
-        <!-- Edit mode hint bar -->
-        <div id="editHint" style="display:none;font-size:.78rem;color:#6d28d9;
-          background:#f5f3ff;border:1px solid #c4b5fd;border-radius:6px;
-          padding:6px 12px;margin-bottom:8px">
-          <i class="bi bi-pencil-square me-1"></i>
-          <strong>Edit mode:</strong> Click a row in the task list to select it,
-          then click &amp; drag on the calendar to draw the bar.
-          Click filled cells to select them for deletion.
-          Click <strong>Save</strong> to commit, or <strong>Edit</strong> again to cancel.
         </div>
 
         <!-- Add task panel -->
@@ -4692,12 +4634,6 @@ class ProjectTrackerHandler(Base):
             </form>
           </div>
         </div>
-
-        <!-- Bulk save form (hidden, submitted by JS) -->
-        <form id="ganttBulkForm" method="post" action="/projects/{pid}/tracker" style="display:none">
-          <input type="hidden" name="action" value="bulk_edit">
-          <input type="hidden" name="changes" id="ganttBulkChanges">
-        </form>
 
         {overview_html}
 
@@ -4802,202 +4738,7 @@ class ProjectTrackerHandler(Base):
             const uf = document.getElementById('undoForm');
             if (uf) {{ e.preventDefault(); uf.submit(); }}
           }}
-          // Delete / Backspace → commit red-cell deletion when in edit mode
-          if ((e.key === 'Delete' || e.key === 'Backspace') && editActive && delSel.size > 0) {{
-            // Only fire if focus is not inside a text input / textarea
-            const tag = document.activeElement ? document.activeElement.tagName : '';
-            if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {{
-              e.preventDefault();
-              ganttDeleteSel();
-            }}
-          }}
         }});
-
-        // ── GANTT Edit Mode ──────────────────────────────────────────────────────
-        // Task positions from server: {{taskId: {{sw, dur, color}}}}
-        const GANTT_TASK_POS = {task_pos_js};
-
-        // Track filled weeks per task (mutable during edit session)
-        const filledWeeks = {{}};   // taskId → Set<week>
-        const dirtyTids   = new Set();
-        let   selTid      = null;
-        let   drag        = null;   // {{mode:'fill'|'delete', start:N, cur:N}}
-        const delSel      = new Set();  // weeks selected for deletion on selTid
-        let   editActive  = false;
-
-        // Initialise from server data
-        for (const [tid, p] of Object.entries(GANTT_TASK_POS)) {{
-          const s = new Set();
-          for (let w = p.sw; w < p.sw + p.dur; w++) s.add(w);
-          filledWeeks[tid] = s;
-        }}
-
-        // ── Toggle edit mode ───────────────────────────────────────────────
-        function ganttToggleEdit() {{
-          editActive = !editActive;
-          const btn = document.getElementById('ganttEditBtn');
-          const saveBtn = document.getElementById('ganttSaveBtn');
-          const hint = document.getElementById('editHint');
-          btn.style.background = editActive ? '#f5f3ff' : '#fff';
-          btn.style.color      = editActive ? '#6d28d9' : '#6d28d9';
-          btn.style.borderColor = editActive ? '#7c3aed' : '#c4b5fd';
-          saveBtn.style.display = editActive ? '' : 'none';
-          hint.style.display    = editActive ? '' : 'none';
-          if (!editActive) {{
-            ganttSelectRow(null);
-            delSel.clear();
-            ganttUpdateDelBtn();
-          }}
-          // Update sidebar row cursor
-          document.querySelectorAll('#ganttSidebody tr').forEach(r => {{
-            r.style.cursor = editActive ? 'pointer' : '';
-          }});
-        }}
-
-        // ── Select a task row ──────────────────────────────────────────────
-        function ganttSelectRow(tid) {{
-          if (!editActive && tid !== null) return;
-          // Deselect previous
-          if (selTid !== null) {{
-            const prev = document.getElementById('tr-' + selTid);
-            if (prev) prev.style.background = '';
-            ganttRenderRow(selTid);
-          }}
-          delSel.clear();
-          ganttUpdateDelBtn();
-          selTid = tid === null ? null : String(tid);
-          if (selTid !== null) {{
-            const row = document.getElementById('tr-' + selTid);
-            if (row) row.style.background = '#fef3c7';
-          }}
-          ganttRenderAll();
-        }}
-
-        // ── Render a single chart row ──────────────────────────────────────
-        function ganttRenderRow(tid) {{
-          const row = document.querySelector('[data-gantt-row="' + tid + '"]');
-          if (!row) return;
-          const fw = filledWeeks[tid] || new Set();
-          const color = (GANTT_TASK_POS[tid] || {{}}).color || '#9ca3af';
-          const isSel = (String(tid) === selTid);
-          row.querySelectorAll('td').forEach(cell => {{
-            const w = parseInt(cell.dataset.week);
-            if (!w) return;
-            const isFill    = fw.has(w);
-            const isNow     = cell.dataset.now === '1';
-            const dragMin   = drag ? Math.min(drag.start, drag.cur) : 0;
-            const dragMax   = drag ? Math.max(drag.start, drag.cur) : 0;
-            const inDrag    = drag && String(drag.tid) === String(tid) && w >= dragMin && w <= dragMax;
-            const isDragFill = inDrag && drag.mode === 'fill';
-            const isDragDel  = inDrag && drag.mode === 'delete';
-            const isDelSel   = isSel && delSel.has(w);
-            let bg, cur;
-            if (isDragFill) {{
-              bg = '#93c5fd'; cur = 'cell';
-            }} else if (isDragDel || isDelSel) {{
-              bg = '#fca5a5'; cur = 'pointer';
-            }} else if (isFill) {{
-              bg = color;
-              cur = (editActive && isSel) ? 'pointer' : 'default';
-            }} else {{
-              bg = isNow ? '#fef9c3' : (isSel && editActive ? '#ede9fe' : '#f9fafb');
-              cur = (editActive && isSel) ? 'crosshair' : 'default';
-            }}
-            cell.style.background = bg;
-            cell.style.cursor = cur;
-          }});
-        }}
-
-        function ganttRenderAll() {{
-          for (const tid of Object.keys(GANTT_TASK_POS)) ganttRenderRow(tid);
-        }}
-
-        // ── Mouse events on chart ──────────────────────────────────────────
-        const chartTable = document.getElementById('ganttChartTable');
-        if (chartTable) {{
-          chartTable.addEventListener('mousedown', function(e) {{
-            if (!editActive || !selTid) return;
-            const cell = e.target.closest('[data-tid]');
-            if (!cell || String(cell.dataset.tid) !== selTid) return;
-            e.preventDefault();
-            const w = parseInt(cell.dataset.week);
-            const isFill = (filledWeeks[selTid] || new Set()).has(w);
-            drag = {{mode: isFill ? 'delete' : 'fill', start: w, cur: w, tid: selTid}};
-            ganttRenderRow(selTid);
-          }});
-
-          chartTable.addEventListener('mousemove', function(e) {{
-            if (!drag) return;
-            const cell = e.target.closest('[data-tid]');
-            if (!cell || String(cell.dataset.tid) !== drag.tid) return;
-            const w = parseInt(cell.dataset.week);
-            if (w !== drag.cur) {{
-              drag.cur = w;
-              ganttRenderRow(selTid);
-            }}
-          }});
-        }}
-
-        document.addEventListener('mouseup', function() {{
-          if (!drag) return;
-          const tid = drag.tid;
-          const min = Math.min(drag.start, drag.cur);
-          const max = Math.max(drag.start, drag.cur);
-          const fw  = filledWeeks[tid] || new Set();
-          if (drag.mode === 'fill') {{
-            for (let w = min; w <= max; w++) fw.add(w);
-            delSel.clear();
-            dirtyTids.add(parseInt(tid));
-          }} else {{
-            // Add to delete selection (only filled cells)
-            for (let w = min; w <= max; w++) {{
-              if (fw.has(w)) delSel.add(w);
-            }}
-            ganttUpdateDelBtn();
-          }}
-          drag = null;
-          ganttRenderRow(tid);
-        }});
-
-        // ── Delete selection ───────────────────────────────────────────────
-        function ganttDeleteSel() {{
-          if (!selTid) return;
-          const fw = filledWeeks[selTid] || new Set();
-          delSel.forEach(w => fw.delete(w));
-          delSel.clear();
-          ganttUpdateDelBtn();
-          dirtyTids.add(parseInt(selTid));
-          ganttRenderRow(selTid);
-        }}
-
-        function ganttUpdateDelBtn() {{
-          document.getElementById('ganttDelSelBtn').style.display =
-            (delSel.size > 0) ? '' : 'none';
-        }}
-
-        // ── Save bulk edits ────────────────────────────────────────────────
-        function ganttSave() {{
-          // Flush any pending red-cell deletion before computing final state
-          if (delSel.size > 0) ganttDeleteSel();
-
-          const changes = [];
-          dirtyTids.forEach(tid => {{
-            const fw = filledWeeks[tid] || new Set();
-            if (fw.size === 0) return;  // no bar → skip
-            const weeks = [...fw].sort((a, b) => a - b);
-            changes.push({{
-              id:         tid,
-              start_week: weeks[0],
-              duration:   weeks[weeks.length - 1] - weeks[0] + 1
-            }});
-          }});
-          if (changes.length === 0) {{
-            ganttToggleEdit();  // nothing changed, just exit
-            return;
-          }}
-          document.getElementById('ganttBulkChanges').value = JSON.stringify(changes);
-          document.getElementById('ganttBulkForm').submit();
-        }}
 
         // ── Drag-to-reorder sidebar rows ───────────────────────────────────
         (function() {{
