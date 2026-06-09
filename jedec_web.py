@@ -5074,7 +5074,6 @@ class ProjectTrackerHandler(Base):
             const newFW = new Set();
             for (let w = newStart; w < newStart + dur; w++) newFW.add(w);
             filledWeeks[tid] = newFW;
-            // Keep TASK_DATA in sync so subsequent drags use the right min_start
             if (TASK_DATA[tid]) TASK_DATA[tid].min_start = newStart;
             dirtyTids.add(PREP_ORDER[i]);
           }}
@@ -5082,10 +5081,62 @@ class ProjectTrackerHandler(Base):
             const lfw = filledWeeks[String(PREP_ORDER[PREP_ORDER.length-1])] || new Set();
             return lfw.size ? Math.max(...lfw) : 0;
           }})();
-          // Stress tasks cannot start before all prep is done — update their min_start
+          cascadeDownstream();
+        }}
+
+        // ── Downstream cascade: Stress → Analysis → Reporting ─────────────────────
+        function _fwDur(tid) {{
+          const fw = filledWeeks[String(tid)] || new Set();
+          return fw.size
+            ? Math.max(...fw) - Math.min(...fw) + 1
+            : (TASK_DATA[String(tid)] ? TASK_DATA[String(tid)].duration : 1);
+        }}
+        function _moveTid(tid, newStart) {{
+          const dur = _fwDur(tid);
+          const newFW = new Set();
+          for (let w = newStart; w < newStart + dur; w++) newFW.add(w);
+          filledWeeks[String(tid)] = newFW;
+          if (TASK_DATA[String(tid)]) TASK_DATA[String(tid)].min_start = newStart;
+          dirtyTids.add(parseInt(tid));
+        }}
+        function cascadeDownstream() {{
+          // 1. Move all stress tasks to start right after prep chain
+          STRESS_TASKS.forEach(t => _moveTid(t.id, prepChainEnd + 1));
+          cascadeAnalysisAll();
+        }}
+        function cascadeAnalysisAll() {{
+          // Build current stress-end map
+          const stressEnd = {{}};
           STRESS_TASKS.forEach(t => {{
-            const stid = String(t.id);
-            if (TASK_DATA[stid]) TASK_DATA[stid].min_start = prepChainEnd + 1;
+            const fw = filledWeeks[String(t.id)] || new Set();
+            stressEnd[String(t.id)] = fw.size ? Math.max(...fw) : prepChainEnd;
+          }});
+          // Move each analysis task to follow its parent stress
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            if (d.category !== 'Analysis') return;
+            const parentEnd = stressEnd[String(d.parent_task_id)] ?? prepChainEnd;
+            _moveTid(tid, parentEnd + 1);
+          }});
+          cascadeReporting();
+        }}
+        function cascadeReporting() {{
+          // Reporting gate = min over analysis groups of (max end in that group)
+          const byParent = {{}};
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            if (d.category !== 'Analysis') return;
+            const pid = String(d.parent_task_id || '');
+            const fw  = filledWeeks[tid] || new Set();
+            const end = fw.size ? Math.max(...fw) : 0;
+            if (!byParent[pid]) byParent[pid] = [];
+            byParent[pid].push(end);
+          }});
+          const groups = Object.values(byParent);
+          const newGate = groups.length
+            ? Math.min(...groups.map(g => Math.max(...g)))
+            : prepChainEnd;
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            if (d.category !== 'Reporting') return;
+            _moveTid(tid, newGate + 1);
           }});
         }}
 
@@ -5175,14 +5226,19 @@ class ProjectTrackerHandler(Base):
             const idx = data.prep_idx !== undefined ? data.prep_idx : -1;
             if (data.category === 'Preparation' && idx >= 0) {{
               cascadePrep(idx + 1);
-              ganttRenderAll();
+            }} else if (data.category === 'Stress') {{
+              cascadeAnalysisAll();
+            }} else if (data.category === 'Analysis') {{
+              cascadeReporting();
             }}
+            ganttRenderAll();
           }} else {{
             for (let w = lo; w <= hi; w++) {{ if (fw.has(w)) delSel.add(w); }}
             ganttUpdateDelBtn();
           }}
           drag = null;
-          if (data.category !== 'Preparation') ganttRenderRow(tid);
+          if (data.category !== 'Preparation' && data.category !== 'Stress' && data.category !== 'Analysis')
+            ganttRenderRow(tid);
         }}
         document.addEventListener('mouseup', () => {{ ganttCommitDrag(); }});
 
@@ -5210,7 +5266,13 @@ class ProjectTrackerHandler(Base):
           }} else {{
             delSel.forEach(w => fw.delete(w));
             delSel.clear(); ganttUpdateDelBtn();
-            ganttRenderRow(tid);
+            if (data.category === 'Stress') {{
+              cascadeAnalysisAll(); ganttRenderAll();
+            }} else if (data.category === 'Analysis') {{
+              cascadeReporting(); ganttRenderAll();
+            }} else {{
+              ganttRenderRow(tid);
+            }}
           }}
           dirtyTids.add(parseInt(tid));
         }}
