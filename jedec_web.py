@@ -3936,11 +3936,14 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
         ("HTS",      "hts",    6, "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
     ]
 
+    # Standard stress tests start after Preconditioning [2wk] + Post-PC CSAM [1wk]
+    other_stress_start = stress_start + 3
+
     for (sname, skey, sdur, pcsam_name, ptest_name, tkey, ptest_dur) in pairs:
         stress_idx = len(result)          # remember position of this stress task
         result.append({"task_name": sname, "category": "Stress", "test_key": skey,
-                        "start_week": stress_start, "duration": sdur, "n_mode": "test"})
-        post_sw = stress_start + sdur     # analysis starts week AFTER stress ends
+                        "start_week": other_stress_start, "duration": sdur, "n_mode": "test"})
+        post_sw = other_stress_start + sdur   # analysis starts week AFTER stress ends
         if pcsam_name:
             result.append({"task_name": pcsam_name, "category": "Analysis", "test_key": tkey,
                             "start_week": post_sw, "duration": 1,
@@ -4236,6 +4239,19 @@ class ProjectTrackerHandler(Base):
         )
         _stress_end_by_id = {t["id"]: t["start_week"] + t["duration"] - 1 for t in _stress_gnt}
 
+        # Preconditioning = Stress tasks with test_key "pc"; their Analysis
+        # children (Post-PC CSAM) gate all other Stress tasks.
+        _precond_ids   = {t["id"] for t in _stress_gnt if (t.get("test_key") or "") == "pc"}
+        _precond_end   = max(
+            (_stress_end_by_id[i] for i in _precond_ids if i in _stress_end_by_id),
+            default=_prep_chain_end
+        )
+        _post_pc_end   = max(
+            (t["start_week"] + t["duration"] - 1
+             for t in _analysis_gnt if t.get("parent_task_id") in _precond_ids),
+            default=_precond_end
+        )
+
         _ab = _dd_(list)
         for _at in _analysis_gnt:
             _ap = _at.get("parent_task_id")
@@ -4252,6 +4268,7 @@ class ProjectTrackerHandler(Base):
             _bbg, _ = _GANTT_STATUS_COLORS.get(t["status"], ("#9ca3af", "#6b7280"))
             _ent = {
                 "category":       _cat,
+                "test_key":       (t.get("test_key") or ""),
                 "start_week":     t["start_week"],
                 "duration":       t["duration"],
                 "color":          _bbg,
@@ -4269,7 +4286,11 @@ class ProjectTrackerHandler(Base):
                     else _prep_sorted[_ix-1]["start_week"] + _prep_sorted[_ix-1]["duration"]
                 )
             elif _cat == "Stress":
-                _ent["min_start"] = _prep_chain_end + 1
+                # Preconditioning gated by prep; all others gated by Post-PC CSAM
+                if _tid in _precond_ids:
+                    _ent["min_start"] = _prep_chain_end + 1
+                else:
+                    _ent["min_start"] = _post_pc_end + 1
             elif _cat == "Analysis":
                 _pid2 = t.get("parent_task_id")
                 _ent["min_start"] = (_stress_end_by_id.get(_pid2, _prep_chain_end) if _pid2 else _prep_chain_end) + 1
@@ -5244,19 +5265,66 @@ class ProjectTrackerHandler(Base):
           if (TASK_DATA[String(tid)]) TASK_DATA[String(tid)].min_start = newStart;
           dirtyTids.add(parseInt(tid));
         }}
-        function cascadeDownstream() {{
-          // 1. Move all stress tasks to start right after prep chain
-          STRESS_TASKS.forEach(t => _moveTid(t.id, prepChainEnd + 1));
-          cascadeAnalysisAll();
-        }}
-        function cascadeAnalysisAll() {{
-          // Build current stress-end map
-          const stressEnd = {{}};
+        function _buildStressEndMap() {{
+          const m = {{}};
           STRESS_TASKS.forEach(t => {{
             const fw = filledWeeks[String(t.id)] || new Set();
-            stressEnd[String(t.id)] = fw.size ? Math.max(...fw) : prepChainEnd;
+            m[String(t.id)] = fw.size ? Math.max(...fw) : prepChainEnd;
           }});
-          // Move each analysis task to follow its parent stress
+          return m;
+        }}
+        function _getPrecondTids() {{
+          return STRESS_TASKS
+            .filter(t => (TASK_DATA[String(t.id)] || {{}}).test_key === 'pc')
+            .map(t => String(t.id));
+        }}
+
+        // Move Post-PC CSAM then return the max end week of those tasks.
+        function _movePcCsam(precondTids, stressEndMap) {{
+          let postPcEnd = prepChainEnd;
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            if (d.category !== 'Analysis') return;
+            if (!precondTids.includes(String(d.parent_task_id))) return;
+            const parentEnd = stressEndMap[String(d.parent_task_id)] || prepChainEnd;
+            _moveTid(tid, parentEnd + 1);
+            const fw = filledWeeks[tid] || new Set();
+            postPcEnd = Math.max(postPcEnd, fw.size ? Math.max(...fw) : parentEnd + 1);
+          }});
+          return postPcEnd;
+        }}
+
+        // Full downstream reset — called after any Prep change.
+        function cascadeDownstream() {{
+          const precondTids = _getPrecondTids();
+          // 1. Preconditioning starts right after prep
+          precondTids.forEach(tid => _moveTid(tid, prepChainEnd + 1));
+          // 2. Post-PC CSAM follows Preconditioning
+          const sem      = _buildStressEndMap();
+          const postPcEnd = _movePcCsam(precondTids, sem);
+          // 3. All other stress tasks start after Post-PC CSAM
+          STRESS_TASKS.forEach(t => {{
+            if (precondTids.includes(String(t.id))) return;
+            _moveTid(t.id, postPcEnd + 1);
+          }});
+          // 4. Cascade analysis for non-precond parents, then reporting
+          cascadeAnalysisAll();
+        }}
+
+        // Called when a Preconditioning bar changes — cascades Post-PC CSAM,
+        // then shifts other stress tasks, then full analysis + reporting.
+        function cascadeFromPrecond() {{
+          const precondTids = _getPrecondTids();
+          const sem       = _buildStressEndMap();
+          const postPcEnd = _movePcCsam(precondTids, sem);
+          STRESS_TASKS.forEach(t => {{
+            if (precondTids.includes(String(t.id))) return;
+            _moveTid(t.id, postPcEnd + 1);
+          }});
+          cascadeAnalysisAll();
+        }}
+
+        function cascadeAnalysisAll() {{
+          const stressEnd = _buildStressEndMap();
           Object.entries(TASK_DATA).forEach(([tid, d]) => {{
             if (d.category !== 'Analysis') return;
             const parentEnd = stressEnd[String(d.parent_task_id)] ?? prepChainEnd;
@@ -5265,7 +5333,6 @@ class ProjectTrackerHandler(Base):
           cascadeReporting();
         }}
         function cascadeReporting() {{
-          // Reporting gate = min over analysis groups of (max end in that group)
           const byParent = {{}};
           Object.entries(TASK_DATA).forEach(([tid, d]) => {{
             if (d.category !== 'Analysis') return;
@@ -5385,7 +5452,11 @@ class ProjectTrackerHandler(Base):
             if (data.category === 'Preparation' && idx >= 0) {{
               cascadePrep(idx + 1);
             }} else if (data.category === 'Stress') {{
-              cascadeAnalysisAll();
+              if (_getPrecondTids().includes(tid)) {{
+                cascadeFromPrecond();
+              }} else {{
+                cascadeAnalysisAll();
+              }}
             }} else if (data.category === 'Analysis') {{
               cascadeReporting();
             }}
@@ -5425,7 +5496,12 @@ class ProjectTrackerHandler(Base):
             delSel.forEach(w => fw.delete(w));
             delSel.clear(); ganttUpdateDelBtn();
             if (data.category === 'Stress') {{
-              cascadeAnalysisAll(); ganttRenderAll();
+              if (_getPrecondTids().includes(tid)) {{
+                cascadeFromPrecond();
+              }} else {{
+                cascadeAnalysisAll();
+              }}
+              ganttRenderAll();
             }} else if (data.category === 'Analysis') {{
               cascadeReporting(); ganttRenderAll();
             }} else {{
