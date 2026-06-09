@@ -3962,7 +3962,8 @@ class ProjectTrackerHandler(Base):
         if not p: return
         tasks      = _db.list_gantt_tasks(p["id"])
         has_hist   = _db.has_gantt_history(p["id"])
-        body       = self._render_gantt(p, tasks, has_history=has_hist)
+        flash      = self.get_argument("flash", "")
+        body       = self._render_gantt(p, tasks, has_history=has_hist, flash=flash)
         self.emit(body, f"Schedule — {p['name']}", active="projects",
                   project=p, active_sub="tracker")
 
@@ -3973,6 +3974,16 @@ class ProjectTrackerHandler(Base):
 
         if action == "seed":
             sample_counts = _db.get_samples(p["id"])
+            has_any = any(
+                isinstance(v, (int, float)) and int(v) > 0
+                for v in sample_counts.values()
+            )
+            if not sample_counts or not has_any:
+                self.redirect(
+                    f"/projects/{p['id']}/tracker"
+                    "?flash=no_samples"
+                )
+                return
             defaults = _compute_seeded_tasks(sample_counts)
             _db.bulk_add_gantt_tasks(p["id"], defaults)
         elif action == "clear":
@@ -4099,7 +4110,7 @@ class ProjectTrackerHandler(Base):
             return
         self.redirect(f"/projects/{p['id']}/tracker")
 
-    def _render_gantt(self, p: dict, tasks: list, has_history: bool = False) -> str:
+    def _render_gantt(self, p: dict, tasks: list, has_history: bool = False, flash: str = "") -> str:
         from datetime import date, timedelta, datetime as _dt
         pid = p["id"]
 
@@ -4652,6 +4663,14 @@ class ProjectTrackerHandler(Base):
           </div>
         </div>
 
+        {
+            '''<div class="alert alert-warning d-flex align-items-center gap-2 mb-3 py-2 px-3" role="alert" style="font-size:.85rem">
+          <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
+          <span>No sample counts found. Please add sample counts in the
+          <a href="/projects/''' + str(pid) + '''/samples" class="alert-link">Sample Planner</a>
+          before seeding the schedule.</span>
+        </div>''' if flash == "no_samples" else ""
+        }
         <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
           <h5 class="mb-0" style="font-weight:300">Schedule — {p['name']}</h5>
           <div class="d-flex align-items-center flex-wrap gap-1">
