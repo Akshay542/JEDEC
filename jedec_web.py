@@ -4663,6 +4663,31 @@ class ProjectTrackerHandler(Base):
           </div>
         </div>
 
+        <!-- Admin Login modal -->
+        <div class="modal fade" id="adminLoginModal" tabindex="-1">
+          <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h6 class="modal-title mb-0"><i class="bi bi-shield-lock me-2"></i>Admin Login</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <label class="form-label" style="font-size:.83rem">Password</label>
+                <input type="password" class="form-control form-control-sm" id="adminPwInput"
+                       placeholder="Enter password" onkeydown="if(event.key==='Enter')ganttAdminSubmit()">
+                <div id="adminPwError" style="display:none;font-size:.78rem;color:#dc2626;margin-top:6px">
+                  Incorrect password.
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm" onclick="ganttAdminSubmit()"
+                  style="background:var(--df-accent);color:#fff;border:none">Unlock</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {
             '''<div class="alert alert-warning d-flex align-items-center gap-2 mb-3 py-2 px-3" role="alert" style="font-size:.85rem">
           <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
@@ -4678,7 +4703,11 @@ class ProjectTrackerHandler(Base):
             {undo_btn}
             {seed_btn}
             {clear_btn}
-            <!-- Edit mode -->
+            <!-- Admin login / Edit mode -->
+            <button id="ganttAdminBtn" class="btn btn-sm ms-1" onclick="ganttAdminLogin()"
+              style="border:1px solid #d1d5db;color:#6b7280;background:#fff;font-size:.8rem">
+              <i class="bi bi-shield-lock me-1"></i>Admin Login
+            </button>
             <button id="ganttEditBtn" class="btn btn-sm ms-1" onclick="ganttEnterEdit()"
               style="border:1px solid #c4b5fd;color:#6d28d9;background:#fff;font-size:.8rem">
               <i class="bi bi-pencil-square me-1"></i>Edit
@@ -4830,12 +4859,13 @@ class ProjectTrackerHandler(Base):
         const reportingGate    = {_reporting_gate};
 
         // ── State ─────────────────────────────────────────────────────────────────
-        const filledWeeks = {{}};
-        const dirtyTids   = new Set();
-        let   selTid      = null;
-        let   drag        = null;
-        const delSel      = new Set();
-        let   editActive  = false;
+        const filledWeeks  = {{}};
+        const dirtyTids    = new Set();
+        let   selTid       = null;
+        let   drag         = null;
+        const delSel       = new Set();
+        let   editActive   = false;
+        let   adminUnlocked = sessionStorage.getItem('ganttAdminUnlocked') === '1';
 
         // Initialise filledWeeks from server data
         Object.entries(TASK_DATA).forEach(([tid, d]) => {{
@@ -4843,6 +4873,18 @@ class ProjectTrackerHandler(Base):
           for (let w = d.start_week; w < d.start_week + d.duration; w++) s.add(w);
           filledWeeks[tid] = s;
         }});
+
+        // Reflect persistent admin state on page load
+        (function() {{
+          if (adminUnlocked) {{
+            const btn = document.getElementById('ganttAdminBtn');
+            if (btn) {{
+              btn.innerHTML = '<i class="bi bi-shield-fill-check me-1"></i>Admin';
+              btn.style.cssText = 'border:1px solid #16a34a;color:#15803d;background:#f0fdf4;font-size:.8rem';
+              btn.onclick = ganttAdminLogout;
+            }}
+          }}
+        }})();
 
         // ── n_mode / category helpers ────────────────────────────────────────────
         var CAT_N_DEFAULT = {{
@@ -4937,11 +4979,46 @@ class ProjectTrackerHandler(Base):
           bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
         }}
 
-        // ── Password-protected edit mode ─────────────────────────────────────────
+        // ── Admin login / password-protected edit mode ───────────────────────────
+        function ganttAdminLogin() {{
+          document.getElementById('adminPwInput').value = '';
+          document.getElementById('adminPwError').style.display = 'none';
+          bootstrap.Modal.getOrCreateInstance(document.getElementById('adminLoginModal')).show();
+          setTimeout(() => document.getElementById('adminPwInput').focus(), 400);
+        }}
+        function ganttAdminSubmit() {{
+          const pw = document.getElementById('adminPwInput').value;
+          if (pw !== 'password') {{
+            document.getElementById('adminPwError').style.display = '';
+            return;
+          }}
+          adminUnlocked = true;
+          sessionStorage.setItem('ganttAdminUnlocked', '1');
+          bootstrap.Modal.getOrCreateInstance(document.getElementById('adminLoginModal')).hide();
+          const btn = document.getElementById('ganttAdminBtn');
+          if (btn) {{
+            btn.innerHTML = '<i class="bi bi-shield-fill-check me-1"></i>Admin';
+            btn.style.cssText = 'border:1px solid #16a34a;color:#15803d;background:#f0fdf4;font-size:.8rem';
+            btn.onclick = ganttAdminLogout;
+          }}
+        }}
+        function ganttAdminLogout() {{
+          adminUnlocked = false;
+          sessionStorage.removeItem('ganttAdminUnlocked');
+          if (editActive) ganttDeactivateEdit();
+          const btn = document.getElementById('ganttAdminBtn');
+          if (btn) {{
+            btn.innerHTML = '<i class="bi bi-shield-lock me-1"></i>Admin Login';
+            btn.style.cssText = 'border:1px solid #d1d5db;color:#6b7280;background:#fff;font-size:.8rem';
+            btn.onclick = ganttAdminLogin;
+          }}
+        }}
         function ganttEnterEdit() {{
-          var pw = prompt('Enter password to edit the schedule:');
-          if (pw === null) return;
-          if (pw !== 'password') {{ alert('Incorrect password.'); return; }}
+          if (!adminUnlocked) {{
+            ganttAdminLogin();
+            return;
+          }}
+          if (editActive) {{ ganttDeactivateEdit(); return; }}
           editActive = true;
           document.getElementById('ganttEditBtn').style.cssText =
             'border:1px solid #7c3aed;color:#6d28d9;background:#f5f3ff;font-size:.8rem';
@@ -4984,7 +5061,7 @@ class ProjectTrackerHandler(Base):
         // ── Prep cascade ──────────────────────────────────────────────────────────
         function cascadePrep(fromIdx) {{
           for (let i = fromIdx; i < PREP_ORDER.length; i++) {{
-            const tid    = String(PREP_ORDER[i]);
+            const tid     = String(PREP_ORDER[i]);
             const prevEnd = i === 0 ? 0 : (() => {{
               const pfw = filledWeeks[String(PREP_ORDER[i-1])] || new Set();
               return pfw.size ? Math.max(...pfw) : 0;
@@ -4997,12 +5074,19 @@ class ProjectTrackerHandler(Base):
             const newFW = new Set();
             for (let w = newStart; w < newStart + dur; w++) newFW.add(w);
             filledWeeks[tid] = newFW;
+            // Keep TASK_DATA in sync so subsequent drags use the right min_start
+            if (TASK_DATA[tid]) TASK_DATA[tid].min_start = newStart;
             dirtyTids.add(PREP_ORDER[i]);
           }}
           prepChainEnd = PREP_ORDER.length === 0 ? 0 : (() => {{
             const lfw = filledWeeks[String(PREP_ORDER[PREP_ORDER.length-1])] || new Set();
             return lfw.size ? Math.max(...lfw) : 0;
           }})();
+          // Stress tasks cannot start before all prep is done — update their min_start
+          STRESS_TASKS.forEach(t => {{
+            const stid = String(t.id);
+            if (TASK_DATA[stid]) TASK_DATA[stid].min_start = prepChainEnd + 1;
+          }});
         }}
 
         // ── Render ────────────────────────────────────────────────────────────────
@@ -5067,7 +5151,7 @@ class ProjectTrackerHandler(Base):
             if (w !== drag.curW) {{ drag.curW = w; ganttRenderRow(drag.tid); }}
           }});
         }}
-        document.addEventListener('mouseup', () => {{
+        function ganttCommitDrag() {{
           if (!drag) return;
           const tid  = String(drag.tid);
           const data = TASK_DATA[tid] || {{}};
@@ -5099,7 +5183,8 @@ class ProjectTrackerHandler(Base):
           }}
           drag = null;
           if (data.category !== 'Preparation') ganttRenderRow(tid);
-        }});
+        }}
+        document.addEventListener('mouseup', () => {{ ganttCommitDrag(); }});
 
         // ── Delete ────────────────────────────────────────────────────────────────
         function ganttDeleteSel() {{
@@ -5140,11 +5225,13 @@ class ProjectTrackerHandler(Base):
             const uf = document.getElementById('undoForm');
             if (uf) {{ e.preventDefault(); uf.submit(); }}
           }}
-          if ((e.key === 'Delete' || e.key === 'Backspace') && editActive && delSel.size > 0) {{
-            const tag = document.activeElement ? document.activeElement.tagName : '';
-            if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {{
-              e.preventDefault(); ganttDeleteSel();
-            }}
+          const tag = document.activeElement ? document.activeElement.tagName : '';
+          const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+          if ((e.key === 'Delete' || e.key === 'Backspace') && editActive && delSel.size > 0 && !inInput) {{
+            e.preventDefault(); ganttDeleteSel();
+          }}
+          if (e.key === 'Enter' && editActive && drag && drag.mode === 'fill' && !inInput) {{
+            e.preventDefault(); ganttCommitDrag();
           }}
         }});
 
