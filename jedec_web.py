@@ -4766,10 +4766,10 @@ class ProjectTrackerHandler(Base):
               data-bs-toggle="collapse" data-bs-target="#addTaskPanel">
               <i class="bi bi-plus-lg me-1"></i>Add Task
             </button>
-            <a href="/projects/{pid}/tracker/csv"
+            <a href="/projects/{pid}/tracker/xlsx"
                class="btn btn-sm ms-1" style="border:1px solid var(--df-border);font-size:.8rem"
                download>
-              <i class="bi bi-download me-1"></i>CSV
+              <i class="bi bi-file-earmark-spreadsheet me-1"></i>Export Excel
             </a>
           </div>
         </div>
@@ -5625,13 +5625,20 @@ class ProjectTaskHandler(Base):
         self.redirect(f"/projects/{p['id']}/tracker")
 
 
-class ProjectTrackerCsvHandler(Base):
-    """Return the GANTT schedule as a downloadable CSV."""
+class ProjectTrackerXlsxHandler(Base):
+    """Return the GANTT schedule as a downloadable Excel workbook with visual chart."""
 
     def get(self, pid):
-        import csv as _csv
         import io as _io
         from datetime import date as _date, timedelta as _td
+        try:
+            import openpyxl
+            from openpyxl.styles import (PatternFill, Font, Alignment,
+                                          Border, Side, GradientFill)
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            self.set_status(500)
+            self.finish("openpyxl not installed"); return
 
         p = _db.get_project(int(pid))
         if not p:
@@ -5640,16 +5647,15 @@ class ProjectTrackerCsvHandler(Base):
         tasks = _db.list_gantt_tasks(p["id"])
         meta  = _db.get_meta(p["id"])
 
-        # Calendar anchor (same logic as _render_gantt)
         start_str = (meta.get("gantt_start_date") or "").strip()
         try:
             anchor = _date.fromisoformat(start_str)
         except ValueError:
             anchor = _date.today()
-            anchor = anchor - _td(days=anchor.weekday())
+            anchor -= _td(days=anchor.weekday())
 
-        def week_to_date(wk: int) -> str:
-            return (anchor + _td(weeks=wk - 1)).strftime("%Y-%m-%d")
+        def week_to_date(wk: int) -> _date:
+            return anchor + _td(weeks=wk - 1)
 
         status_labels = {
             "not_started": "Not Started",
@@ -5659,43 +5665,218 @@ class ProjectTrackerCsvHandler(Base):
             "na":           "N/A",
         }
 
-        # Build parent-id → task-name lookup for the Analysis "Parent" column
-        id_to_name = {t["id"]: t["task_name"] for t in tasks}
+        # Category → fill color (matches web GANTT sidebar palette)
+        _cat_palette = ["3B82F6", "8B5CF6", "EC4899", "F97316", "14B8A6", "64748B"]
+        _cats_seen = list(dict.fromkeys(
+            (t.get("category") or "").strip() for t in tasks
+            if (t.get("category") or "").strip()
+        ))
+        cat_hex = {c: _cat_palette[i % len(_cat_palette)]
+                   for i, c in enumerate(_cats_seen)}
 
-        buf = _io.StringIO()
-        writer = _csv.writer(buf)
-        writer.writerow([
-            "#", "Task Name", "Category", "Status",
-            "Start Week", "End Week", "Duration (wks)",
-            "Start Date", "End Date",
-            "Sample Size Mode", "Custom n",
-            "Parent Task",
-        ])
-        for i, t in enumerate(tasks, 1):
-            sw  = t["start_week"]
-            dur = t["duration"]
-            ew  = sw + dur - 1
-            n_mode = t.get("n_mode") or "auto"
-            writer.writerow([
-                i,
-                t["task_name"],
-                t.get("category") or "",
-                status_labels.get(t.get("status", "not_started"), t.get("status", "")),
-                sw,
-                ew,
-                dur,
-                week_to_date(sw),
-                week_to_date(ew),
-                n_mode,
-                t.get("n_custom") or "",
-                id_to_name.get(t.get("parent_task_id"), ""),
-            ])
+        def cat_fill(cat: str) -> PatternFill:
+            h = cat_hex.get(cat, "64748B")
+            return PatternFill("solid", fgColor="FF" + h)
+
+        def cat_font(cat: str) -> Font:
+            return Font(name="Arial", size=9, bold=True, color="FFFFFFFF")
+
+        thin = Side(style="thin", color="FFD1D5DB")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        hdr_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        # Compute week range
+        max_week = max((t["start_week"] + t["duration"] - 1 for t in tasks), default=1)
+        n_weeks  = max_week + 2  # small buffer
+
+        # ── Build workbook ───────────────────────────────────────────────────
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "GANTT Chart"
+
+        # ── Info columns: A=#  B=Task Name  C=Category  D=Status ───────────
+        INFO_COLS = 4   # columns before week grid starts
+        WEEK_START_COL = INFO_COLS + 1  # = column 5 (E)
+
+        # Row 1: month banners (merged across weeks sharing a month)
+        # Row 2: week headers (Wk N  +  date)
+        HDR_ROW1 = 1
+        HDR_ROW2 = 2
+        DATA_START_ROW = 3
+
+        # ── Header row 1: month groupings ───────────────────────────────────
+        hdr1_fill = PatternFill("solid", fgColor="FF1E3A5F")
+        hdr1_font = Font(name="Arial", size=8, bold=True, color="FFFFFFFF")
+        hdr2_fill = PatternFill("solid", fgColor="FF2D4E7E")
+        hdr2_font = Font(name="Arial", size=7, bold=True, color="FFFFFFFF")
+        info_hdr_fill = PatternFill("solid", fgColor="FF1E3A5F")
+        info_hdr_font = Font(name="Arial", size=9, bold=True, color="FFFFFFFF")
+        center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        left   = Alignment(horizontal="left",   vertical="center")
+
+        # Info header labels
+        for col, label in enumerate(["#", "Task Name", "Category", "Status"], 1):
+            c = ws.cell(row=HDR_ROW1, column=col, value=label)
+            c.fill, c.font, c.alignment, c.border = \
+                info_hdr_fill, info_hdr_font, center, hdr_border
+            # span both header rows
+        ws.merge_cells(start_row=HDR_ROW1, start_column=1,
+                       end_row=HDR_ROW2,   end_column=1)
+        ws.merge_cells(start_row=HDR_ROW1, start_column=2,
+                       end_row=HDR_ROW2,   end_column=2)
+        ws.merge_cells(start_row=HDR_ROW1, start_column=3,
+                       end_row=HDR_ROW2,   end_column=3)
+        ws.merge_cells(start_row=HDR_ROW1, start_column=4,
+                       end_row=HDR_ROW2,   end_column=4)
+        # re-apply style to merged top-left cell (openpyxl needs it on the anchor)
+        for col in range(1, 5):
+            c = ws.cell(row=HDR_ROW1, column=col)
+            c.fill, c.font, c.alignment, c.border = \
+                info_hdr_fill, info_hdr_font, center, hdr_border
+            c2 = ws.cell(row=HDR_ROW2, column=col)
+            c2.fill, c2.font, c2.alignment, c2.border = \
+                info_hdr_fill, info_hdr_font, center, hdr_border
+
+        # Month grouping in row 1 + week numbers in row 2
+        month_start_col = None
+        cur_month       = None
+        for wk in range(1, n_weeks + 1):
+            col = WEEK_START_COL + (wk - 1)
+            d   = week_to_date(wk)
+            mo  = (d.year, d.month)
+            # Row 2: week number
+            c2 = ws.cell(row=HDR_ROW2, column=col,
+                         value=f"W{d.isocalendar()[1]}")
+            c2.fill, c2.font = hdr2_fill, hdr2_font
+            c2.alignment     = Alignment(horizontal="center", vertical="center",
+                                          text_rotation=90)
+            c2.border        = hdr_border
+            # Row 1: month label — merge on transition
+            if mo != cur_month:
+                if cur_month is not None and month_start_col is not None:
+                    end_col = col - 1
+                    if end_col > month_start_col:
+                        ws.merge_cells(start_row=HDR_ROW1, start_column=month_start_col,
+                                       end_row=HDR_ROW1,   end_column=end_col)
+                    ws.cell(row=HDR_ROW1, column=month_start_col).alignment = center
+                cur_month       = mo
+                month_start_col = col
+                label = d.strftime("%b %Y")
+                c1 = ws.cell(row=HDR_ROW1, column=col, value=label)
+                c1.fill, c1.font, c1.alignment, c1.border = \
+                    hdr1_fill, hdr1_font, center, hdr_border
+            else:
+                c1 = ws.cell(row=HDR_ROW1, column=col)
+                c1.fill, c1.border = hdr1_fill, hdr_border
+        # close last month merge
+        if month_start_col is not None:
+            end_col = WEEK_START_COL + n_weeks - 1
+            if end_col > month_start_col:
+                ws.merge_cells(start_row=HDR_ROW1, start_column=month_start_col,
+                               end_row=HDR_ROW1,   end_column=end_col)
+            ws.cell(row=HDR_ROW1, column=month_start_col).alignment = center
+
+        # ── Data rows ───────────────────────────────────────────────────────
+        alt_fill  = PatternFill("solid", fgColor="FFF9FAFB")
+        base_fill = PatternFill("solid", fgColor="FFFFFFFF")
+        empty_fill = PatternFill("solid", fgColor="FFF3F4F6")
+        task_font = Font(name="Arial", size=9)
+        num_font  = Font(name="Arial", size=9, color="FF6B7280")
+
+        for i, t in enumerate(tasks):
+            row   = DATA_START_ROW + i
+            sw    = t["start_week"]
+            ew    = sw + t["duration"] - 1
+            cat   = (t.get("category") or "").strip()
+            stat  = status_labels.get(t.get("status", "not_started"),
+                                       t.get("status", ""))
+            row_bg = alt_fill if i % 2 else base_fill
+
+            # Col A: row number
+            ca = ws.cell(row=row, column=1, value=i + 1)
+            ca.font, ca.alignment, ca.fill, ca.border = \
+                num_font, center, row_bg, border
+
+            # Col B: task name
+            cb = ws.cell(row=row, column=2, value=t["task_name"])
+            cb.font, cb.alignment, cb.fill, cb.border = \
+                task_font, left, row_bg, border
+
+            # Col C: category (colored badge)
+            cc = ws.cell(row=row, column=3, value=cat)
+            cc.fill, cc.font, cc.alignment, cc.border = \
+                cat_fill(cat), cat_font(cat), center, border
+
+            # Col D: status
+            cd = ws.cell(row=row, column=4, value=stat)
+            cd.font, cd.alignment, cd.fill, cd.border = \
+                task_font, center, row_bg, border
+
+            # Week cells
+            bar_fill = cat_fill(cat)
+            for wk in range(1, n_weeks + 1):
+                col = WEEK_START_COL + (wk - 1)
+                c = ws.cell(row=row, column=col)
+                c.border = border
+                if sw <= wk <= ew:
+                    c.fill = bar_fill
+                else:
+                    c.fill = empty_fill
+                c.alignment = center
+
+        # ── Column widths ────────────────────────────────────────────────────
+        ws.column_dimensions["A"].width = 4
+        ws.column_dimensions["B"].width = 28
+        ws.column_dimensions["C"].width = 14
+        ws.column_dimensions["D"].width = 13
+        for wk in range(1, n_weeks + 1):
+            ws.column_dimensions[get_column_letter(WEEK_START_COL + wk - 1)].width = 3.2
+
+        # ── Row heights ──────────────────────────────────────────────────────
+        ws.row_dimensions[HDR_ROW1].height = 14
+        ws.row_dimensions[HDR_ROW2].height = 42   # rotated text needs height
+        for i in range(len(tasks)):
+            ws.row_dimensions[DATA_START_ROW + i].height = 18
+
+        # ── Freeze panes at first data cell after info cols ──────────────────
+        ws.freeze_panes = ws.cell(row=DATA_START_ROW,
+                                   column=WEEK_START_COL)
+
+        # ── Legend sheet ─────────────────────────────────────────────────────
+        ws2 = wb.create_sheet("Legend")
+        ws2["A1"] = p["name"]
+        ws2["A1"].font = Font(name="Arial", size=12, bold=True)
+        ws2["A2"] = f"Anchor date: {anchor.strftime('%B %d, %Y')}"
+        ws2["A2"].font = Font(name="Arial", size=9, color="FF6B7280")
+        ws2.column_dimensions["A"].width = 28
+        ws2.column_dimensions["B"].width = 18
+        row_l = 4
+        ws2.cell(row=row_l, column=1, value="Category").font = \
+            Font(name="Arial", size=9, bold=True)
+        ws2.cell(row=row_l, column=2, value="Color").font = \
+            Font(name="Arial", size=9, bold=True)
+        for cat in _cats_seen:
+            row_l += 1
+            ws2.cell(row=row_l, column=1, value=cat).font = Font(name="Arial", size=9)
+            lc = ws2.cell(row=row_l, column=2)
+            lc.fill = cat_fill(cat)
+            lc.font = cat_font(cat)
+            lc.value = cat
+            lc.alignment = Alignment(horizontal="center", vertical="center")
+
+        # ── Serialize ────────────────────────────────────────────────────────
+        buf = _io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
 
         safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in p["name"])
-        filename  = f"schedule_{safe_name}.csv"
-        self.set_header("Content-Type", "text/csv; charset=utf-8")
-        self.set_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.finish(buf.getvalue())
+        filename  = f"gantt_{safe_name}.xlsx"
+        self.set_header("Content-Type",
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet")
+        self.set_header("Content-Disposition",
+                        f'attachment; filename="{filename}"')
+        self.finish(buf.read())
 
 
 # ── App routing & entry point ─────────────────────────────────────────────────
@@ -5726,7 +5907,7 @@ def make_app():
             (r"/projects/(\d+)/csam/(\d+)/thumb",    ProjectCsamThumbHandler),
             (r"/projects/(\d+)/csam/(\d+)/delete",   ProjectCsamDeleteHandler),
             (r"/projects/(\d+)/tracker",             ProjectTrackerHandler),
-            (r"/projects/(\d+)/tracker/csv",         ProjectTrackerCsvHandler),
+            (r"/projects/(\d+)/tracker/xlsx",        ProjectTrackerXlsxHandler),
             (r"/projects/(\d+)/tracker/task/(\d+)/(edit|delete)", ProjectTaskHandler),
             # ── Static spec PDFs ────────────────────────────────────────────
             (r"/specs/(.*)",                         tornado.web.StaticFileHandler,
