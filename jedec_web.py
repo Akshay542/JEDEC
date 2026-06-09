@@ -4246,9 +4246,10 @@ class ProjectTrackerHandler(Base):
                 _ent["min_start"] = _reporting_gate + 1
             _task_data_py[_tid] = _ent
 
-        _task_data_js    = _json_.dumps({str(k): v for k, v in _task_data_py.items()})
-        _prep_order_js   = _json_.dumps([t["id"] for t in _prep_sorted])
-        _stress_tasks_js = _json_.dumps([{"id": t["id"], "name": t["task_name"]} for t in _stress_gnt])
+        _task_data_js        = _json_.dumps({str(k): v for k, v in _task_data_py.items()})
+        _prep_order_js       = _json_.dumps([t["id"] for t in _prep_sorted])
+        _stress_tasks_js     = _json_.dumps([{"id": t["id"], "name": t["task_name"]} for t in _stress_gnt])
+        _stress_end_by_id_js = _json_.dumps({str(k): v for k, v in _stress_end_by_id.items()})
         _stress_parent_opts = '<option value="">— select parent stress —</option>' + "".join(
             f'<option value="{t["id"]}">{t["task_name"]}</option>' for t in _stress_gnt
         )
@@ -4710,7 +4711,8 @@ class ProjectTrackerHandler(Base):
               </div>
               <div class="col-6 col-md-1">
                 <label class="form-label mb-1" style="font-size:.78rem">Start Wk</label>
-                <input type="number" class="form-control form-control-sm" name="start_week" value="1" min="1">
+                <input type="number" class="form-control form-control-sm" name="start_week"
+                       id="add_sw" value="1" min="1">
               </div>
               <div class="col-6 col-md-1">
                 <label class="form-label mb-1" style="font-size:.78rem">Duration</label>
@@ -4739,7 +4741,8 @@ class ProjectTrackerHandler(Base):
               </div>
               <div class="col-12 col-md-3" id="add_parent_div" style="display:none">
                 <label class="form-label mb-1" style="font-size:.78rem">Parent Stress Task</label>
-                <select class="form-select form-select-sm" name="parent_task_id" id="add_parent_sel">
+                <select class="form-select form-select-sm" name="parent_task_id" id="add_parent_sel"
+                        onchange="onAddParentChange()">
                   {_stress_parent_opts}
                 </select>
               </div>
@@ -4800,10 +4803,12 @@ class ProjectTrackerHandler(Base):
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
         <script>
         // ── Server data ───────────────────────────────────────────────────────────
-        const TASK_DATA    = {_task_data_js};
-        const PREP_ORDER   = {_prep_order_js};
-        const STRESS_TASKS = {_stress_tasks_js};
-        let   prepChainEnd = {_prep_chain_end};
+        const TASK_DATA        = {_task_data_js};
+        const PREP_ORDER       = {_prep_order_js};
+        const STRESS_TASKS     = {_stress_tasks_js};
+        const STRESS_END_BY_ID = {_stress_end_by_id_js};
+        let   prepChainEnd     = {_prep_chain_end};
+        const reportingGate    = {_reporting_gate};
 
         // ── State ─────────────────────────────────────────────────────────────────
         const filledWeeks = {{}};
@@ -4853,6 +4858,34 @@ class ProjectTrackerHandler(Base):
           }}
           const pd = document.getElementById('add_parent_div');
           if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
+          // Auto-set start week based on dependency rules
+          const swEl = document.getElementById('add_sw');
+          if (swEl) {{
+            if (cat === 'Preparation') {{
+              swEl.value = prepChainEnd + 1;
+            }} else if (cat === 'Stress') {{
+              swEl.value = prepChainEnd + 1;
+            }} else if (cat === 'Reporting') {{
+              swEl.value = reportingGate + 1;
+            }} else if (cat === 'Analysis') {{
+              // Will be set when parent is selected; reset to blank for now
+              swEl.value = '';
+            }} else {{
+              swEl.value = 1;
+            }}
+          }}
+        }}
+        function onAddParentChange() {{
+          const sel = document.getElementById('add_parent_sel');
+          const swEl = document.getElementById('add_sw');
+          if (!sel || !swEl) return;
+          const pid = sel.value;
+          if (pid) {{
+            const stressEnd = STRESS_END_BY_ID[String(pid)] || prepChainEnd;
+            swEl.value = stressEnd + 1;
+          }} else {{
+            swEl.value = '';
+          }}
         }}
         function populateEditParentSel(selectedId) {{
           const sel = document.getElementById('e_parent_sel');
@@ -5063,15 +5096,18 @@ class ProjectTrackerHandler(Base):
               const newFW = new Set();
               if (newEnd >= minS) for (let w = minS; w <= newEnd; w++) newFW.add(w);
               filledWeeks[tid] = newFW;
+              delSel.clear(); ganttUpdateDelBtn();
               const idx = data.prep_idx !== undefined ? data.prep_idx : -1;
               if (idx >= 0) cascadePrep(idx + 1);
               ganttRenderAll();
+            }} else {{
+              delSel.clear(); ganttUpdateDelBtn();
             }}
           }} else {{
             delSel.forEach(w => fw.delete(w));
+            delSel.clear(); ganttUpdateDelBtn();
             ganttRenderRow(tid);
           }}
-          delSel.clear(); ganttUpdateDelBtn();
           dirtyTids.add(parseInt(tid));
         }}
         function ganttUpdateDelBtn() {{
