@@ -362,23 +362,41 @@ def reorder_gantt_tasks(pid: int, ordered_ids: list[int]):
         _touch(con, pid)
 
 def bulk_add_gantt_tasks(pid: int, tasks: list[dict]):
-    """Insert a list of task dicts; skip if project already has tasks."""
+    """Insert a list of task dicts; skip if project already has tasks.
+
+    Each dict may include '_parent_idx' (int index into the same list) to
+    wire up parent_task_id after all rows are inserted.
+    """
     with _conn() as con:
         existing = con.execute(
             "SELECT COUNT(*) FROM project_gantt WHERE project_id=?", (pid,)
         ).fetchone()[0]
         if existing:
             return  # don't overwrite user's tasks
+        inserted_ids: list[int] = []
         for i, t in enumerate(tasks):
-            con.execute(
+            cur = con.execute(
                 """INSERT INTO project_gantt
-                   (project_id, task_name, category, test_key, start_week, duration, status, sort_order)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (project_id, task_name, category, test_key,
+                    start_week, duration, status, sort_order,
+                    n_mode, n_custom)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (pid, t["task_name"], t.get("category", ""),
                  t.get("test_key", ""),
                  t.get("start_week", 1), t.get("duration", 1),
-                 "not_started", (i + 1) * 10)
+                 "not_started", (i + 1) * 10,
+                 t.get("n_mode", "auto"),
+                 t.get("n_custom"))
             )
+            inserted_ids.append(cur.lastrowid)
+        # Second pass: resolve _parent_idx → parent_task_id
+        for i, t in enumerate(tasks):
+            p_idx = t.get("_parent_idx")
+            if p_idx is not None:
+                con.execute(
+                    "UPDATE project_gantt SET parent_task_id=? WHERE id=?",
+                    (inserted_ids[p_idx], inserted_ids[i])
+                )
         _touch(con, pid)
 
 # ── Test Conditions (per-project selected condition per test) ─────────────────

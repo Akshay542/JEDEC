@@ -3920,16 +3920,19 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
     ]
 
     for (sname, skey, sdur, pcsam_name, ptest_name, tkey, ptest_dur) in pairs:
+        stress_idx = len(result)          # remember position of this stress task
         result.append({"task_name": sname, "category": "Stress", "test_key": skey,
-                        "start_week": stress_start, "duration": sdur})
-        post_sw = stress_start + sdur
+                        "start_week": stress_start, "duration": sdur, "n_mode": "test"})
+        post_sw = stress_start + sdur     # analysis starts week AFTER stress ends
         if pcsam_name:
             result.append({"task_name": pcsam_name, "category": "Analysis", "test_key": tkey,
-                            "start_week": post_sw, "duration": 1})
+                            "start_week": post_sw, "duration": 1,
+                            "n_mode": "test", "_parent_idx": stress_idx})
             post_sw += 1
         if ptest_name:
             result.append({"task_name": ptest_name, "category": "Analysis", "test_key": tkey,
-                            "start_week": post_sw, "duration": ptest_dur})
+                            "start_week": post_sw, "duration": ptest_dur,
+                            "n_mode": "test", "_parent_idx": stress_idx})
 
     return result
 
