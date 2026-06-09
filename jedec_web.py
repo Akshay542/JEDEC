@@ -4200,6 +4200,11 @@ class ProjectTrackerHandler(Base):
                 tkey      = t.get("test_key", "") or ""
                 n_mode_t  = t.get("n_mode", "auto") or "auto"
                 n_cust_t  = t.get("n_custom", None)
+                cat_t     = (t.get("category") or "").strip()
+                # Resolve 'auto' using category-based defaults
+                _CAT_TOTAL = {"Preparation", "Reporting"}
+                if n_mode_t == "auto":
+                    n_mode_t = "total" if cat_t in _CAT_TOTAL else "test"
                 if n_mode_t == "total":
                     n_samp = str(total_n) if total_n > 0 else "TBD"
                 elif n_mode_t == "test":
@@ -4212,13 +4217,8 @@ class ProjectTrackerHandler(Base):
                         n_samp = str(cv) if cv > 0 else "TBD"
                     except (TypeError, ValueError):
                         n_samp = "TBD"
-                else:  # 'auto' — test_key → per-test; otherwise total
-                    if tkey:
-                        raw   = sample_counts.get(tkey, None)
-                        n_val = _extract_n(raw) if raw is not None else 0
-                        n_samp = str(n_val) if n_val > 0 else "TBD"
-                    else:
-                        n_samp = str(total_n) if total_n > 0 else "TBD"
+                else:
+                    n_samp = "TBD"
                 # Always show the n= pill; grey it out when TBD
                 if n_samp == "TBD":
                     samp_pill = (
@@ -4535,8 +4535,14 @@ class ProjectTrackerHandler(Base):
                   </div>
                   <div class="mb-3">
                     <label class="form-label" style="font-size:.83rem">Category</label>
-                    <input type="text" class="form-control form-control-sm" name="category" id="e_cat"
-                           placeholder="Preparation / Stress / Analysis / Reporting">
+                    <select class="form-select form-select-sm" name="category" id="e_cat"
+                            onchange="onEditCatChange()">
+                      <option value="">— select —</option>
+                      <option value="Preparation">Preparation</option>
+                      <option value="Stress">Stress</option>
+                      <option value="Analysis">Analysis</option>
+                      <option value="Reporting">Reporting</option>
+                    </select>
                   </div>
                   <div class="row g-2">
                     <div class="col">
@@ -4641,8 +4647,14 @@ class ProjectTrackerHandler(Base):
               </div>
               <div class="col-6 col-md-2">
                 <label class="form-label mb-1" style="font-size:.78rem">Category</label>
-                <input type="text" class="form-control form-control-sm" name="category"
-                       placeholder="Stress">
+                <select class="form-select form-select-sm" name="category" id="add_cat"
+                        onchange="onAddCatChange()">
+                  <option value="">— select —</option>
+                  <option value="Preparation">Preparation</option>
+                  <option value="Stress">Stress</option>
+                  <option value="Analysis">Analysis</option>
+                  <option value="Reporting">Reporting</option>
+                </select>
               </div>
               <div class="col-6 col-md-1">
                 <label class="form-label mb-1" style="font-size:.78rem">Start Wk</label>
@@ -4730,6 +4742,14 @@ class ProjectTrackerHandler(Base):
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
         <script>
         // ── Edit-task modal ──────────────────────────────────────────────────────
+        // Map category → default n_mode
+        var CAT_N_DEFAULT = {{
+          'Preparation': 'total',
+          'Reporting':   'total',
+          'Stress':      'test',
+          'Analysis':    'test',
+        }};
+
         function toggleNcust() {{
           var mode = document.getElementById('e_nmode').value;
           document.getElementById('e_ncust_div').style.display =
@@ -4738,6 +4758,26 @@ class ProjectTrackerHandler(Base):
         function toggleAddNcust(sel) {{
           document.getElementById('add_ncust_div').style.display =
             sel.value === 'custom' ? '' : 'none';
+        }}
+
+        // When category changes in the Edit modal, auto-set n_mode default
+        // only if the user hasn't explicitly picked a non-auto mode yet
+        function onEditCatChange() {{
+          var cat   = document.getElementById('e_cat').value;
+          var nmSel = document.getElementById('e_nmode');
+          var def   = CAT_N_DEFAULT[cat];
+          if (def) nmSel.value = def;
+          toggleNcust();
+        }}
+        // Same for the Add Task panel
+        function onAddCatChange() {{
+          var cat   = document.getElementById('add_cat').value;
+          var nmSel = document.querySelector('#addTaskPanel select[name="n_mode"]');
+          if (!nmSel) return;
+          var def = CAT_N_DEFAULT[cat];
+          if (def) nmSel.value = def;
+          document.getElementById('add_ncust_div').style.display =
+            nmSel.value === 'custom' ? '' : 'none';
         }}
 
         function openEditModal(tid, name, cat, sw, dur, status, nmode, ncust) {{
