@@ -3893,8 +3893,6 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
             "Preparation", "", 2),
         ("SCD Bonding + CSAM",
             "Preparation", "", cw(total / 4)),   # 1 day per 4 samples
-        ("CSAM",
-            "Preparation", "", cw(total / 20)),
     ]
 
     result, sw = [], 1
@@ -3908,8 +3906,7 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
     #             post_csam_name, post_test_name, test_key, post_test_dur)
     # Post steps split: CSAM (1 wk) → Testing (1 day/sample → weeks)
     stress_start = sw
-    # Preconditioning (Stress) + Post-PC CSAM (Analysis) — both use total n
-    precond_idx = len(result)
+    # Preconditioning gates all standard stress tests
     result.append({
         "task_name":  "Preconditioning",
         "category":   "Stress",
@@ -3917,15 +3914,6 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
         "start_week": stress_start,
         "duration":   2,
         "n_mode":     "total",
-    })
-    result.append({
-        "task_name":   "Post-PC CSAM",
-        "category":    "Analysis",
-        "test_key":    "pc",
-        "start_week":  stress_start + 2,
-        "duration":    1,
-        "n_mode":      "total",
-        "_parent_idx": precond_idx,
     })
     pairs = [
         ("uHAST",    "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
@@ -3936,8 +3924,8 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
         ("HTS",      "hts",    6, "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
     ]
 
-    # Standard stress tests start after Preconditioning [2wk] + Post-PC CSAM [1wk]
-    other_stress_start = stress_start + 3
+    # Standard stress tests start after Preconditioning [2wk]
+    other_stress_start = stress_start + 2
 
     for (sname, skey, sdur, pcsam_name, ptest_name, tkey, ptest_dur) in pairs:
         stress_idx = len(result)          # remember position of this stress task
@@ -4239,17 +4227,12 @@ class ProjectTrackerHandler(Base):
         )
         _stress_end_by_id = {t["id"]: t["start_week"] + t["duration"] - 1 for t in _stress_gnt}
 
-        # Preconditioning = Stress tasks with test_key "pc"; their Analysis
-        # children (Post-PC CSAM) gate all other Stress tasks.
-        _precond_ids   = {t["id"] for t in _stress_gnt if (t.get("test_key") or "") == "pc"}
-        _precond_end   = max(
+        # Preconditioning = Stress tasks with test_key "pc";
+        # all other Stress tasks are gated by Preconditioning end.
+        _precond_ids = {t["id"] for t in _stress_gnt if (t.get("test_key") or "") == "pc"}
+        _precond_end = max(
             (_stress_end_by_id[i] for i in _precond_ids if i in _stress_end_by_id),
             default=_prep_chain_end
-        )
-        _post_pc_end   = max(
-            (t["start_week"] + t["duration"] - 1
-             for t in _analysis_gnt if t.get("parent_task_id") in _precond_ids),
-            default=_precond_end
         )
 
         _ab = _dd_(list)
@@ -4286,11 +4269,11 @@ class ProjectTrackerHandler(Base):
                     else _prep_sorted[_ix-1]["start_week"] + _prep_sorted[_ix-1]["duration"]
                 )
             elif _cat == "Stress":
-                # Preconditioning gated by prep; all others gated by Post-PC CSAM
+                # Preconditioning gated by prep; all others gated by Preconditioning end
                 if _tid in _precond_ids:
                     _ent["min_start"] = _prep_chain_end + 1
                 else:
-                    _ent["min_start"] = _post_pc_end + 1
+                    _ent["min_start"] = _precond_end + 1
             elif _cat == "Analysis":
                 _pid2 = t.get("parent_task_id")
                 _ent["min_start"] = (_stress_end_by_id.get(_pid2, _prep_chain_end) if _pid2 else _prep_chain_end) + 1
@@ -4479,13 +4462,18 @@ class ProjectTrackerHandler(Base):
         # ── Test status overview (stress tests) ───────────────────────────
         tracker_data  = _db.get_test_tracker(pid)
         saved_conds_ov = _db.get_test_conditions(pid)
-        # Collect unique stress test keys from task list (maintain order)
+        # Collect unique Stress-category tasks from GANTT (maintain order)
         seen_tkeys: set = set()
         stress_tasks: list = []
         for t in tasks:
+            if (t.get("category") or "").strip() != "Stress":
+                continue
             tkey = (t.get("test_key") or "").strip()
             if tkey and tkey not in seen_tkeys:
                 seen_tkeys.add(tkey)
+                stress_tasks.append(t)
+            elif not tkey:
+                # Show Stress tasks without a test_key (custom tasks) by task id
                 stress_tasks.append(t)
 
         ov_cards = ""
@@ -5279,46 +5267,34 @@ class ProjectTrackerHandler(Base):
             .map(t => String(t.id));
         }}
 
-        // Move Post-PC CSAM then return the max end week of those tasks.
-        function _movePcCsam(precondTids, stressEndMap) {{
-          let postPcEnd = prepChainEnd;
-          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
-            if (d.category !== 'Analysis') return;
-            if (!precondTids.includes(String(d.parent_task_id))) return;
-            const parentEnd = stressEndMap[String(d.parent_task_id)] || prepChainEnd;
-            _moveTid(tid, parentEnd + 1);
-            const fw = filledWeeks[tid] || new Set();
-            postPcEnd = Math.max(postPcEnd, fw.size ? Math.max(...fw) : parentEnd + 1);
-          }});
-          return postPcEnd;
-        }}
-
         // Full downstream reset — called after any Prep change.
         function cascadeDownstream() {{
           const precondTids = _getPrecondTids();
           // 1. Preconditioning starts right after prep
           precondTids.forEach(tid => _moveTid(tid, prepChainEnd + 1));
-          // 2. Post-PC CSAM follows Preconditioning
-          const sem      = _buildStressEndMap();
-          const postPcEnd = _movePcCsam(precondTids, sem);
-          // 3. All other stress tasks start after Post-PC CSAM
+          // 2. All other stress tasks start after Preconditioning ends
+          const sem = _buildStressEndMap();
+          const precondEnd = precondTids.length
+            ? Math.max(...precondTids.map(tid => sem[tid] || prepChainEnd))
+            : prepChainEnd;
           STRESS_TASKS.forEach(t => {{
             if (precondTids.includes(String(t.id))) return;
-            _moveTid(t.id, postPcEnd + 1);
+            _moveTid(t.id, precondEnd + 1);
           }});
-          // 4. Cascade analysis for non-precond parents, then reporting
           cascadeAnalysisAll();
         }}
 
-        // Called when a Preconditioning bar changes — cascades Post-PC CSAM,
-        // then shifts other stress tasks, then full analysis + reporting.
+        // Called when a Preconditioning bar changes — shifts other stress tasks,
+        // then cascades analysis + reporting.
         function cascadeFromPrecond() {{
           const precondTids = _getPrecondTids();
-          const sem       = _buildStressEndMap();
-          const postPcEnd = _movePcCsam(precondTids, sem);
+          const sem = _buildStressEndMap();
+          const precondEnd = precondTids.length
+            ? Math.max(...precondTids.map(tid => sem[tid] || prepChainEnd))
+            : prepChainEnd;
           STRESS_TASKS.forEach(t => {{
             if (precondTids.includes(String(t.id))) return;
-            _moveTid(t.id, postPcEnd + 1);
+            _moveTid(t.id, precondEnd + 1);
           }});
           cascadeAnalysisAll();
         }}
@@ -5427,6 +5403,14 @@ class ProjectTrackerHandler(Base):
             if (w !== drag.curW) {{ drag.curW = w; ganttRenderRow(drag.tid); }}
           }});
         }}
+        // Snap all filled weeks for a task to be contiguous (no gaps)
+        function _snapContiguous(tid) {{
+          const fw = filledWeeks[String(tid)];
+          if (!fw || fw.size < 2) return;
+          const lo = Math.min(...fw), hi = Math.max(...fw);
+          for (let w = lo; w <= hi; w++) fw.add(w);
+        }}
+
         function ganttCommitDrag() {{
           if (!drag) return;
           const tid  = String(drag.tid);
@@ -5446,6 +5430,8 @@ class ProjectTrackerHandler(Base):
               filledWeeks[tid] = newFW;
             }} else {{
               for (let w = Math.max(lo, minS); w <= hi; w++) fw.add(w);
+              // Snap contiguous: bridge any gap between existing cells and new fill
+              _snapContiguous(tid);
             }}
             dirtyTids.add(parseInt(tid));
             const idx = data.prep_idx !== undefined ? data.prep_idx : -1;
@@ -5493,7 +5479,16 @@ class ProjectTrackerHandler(Base):
               delSel.clear(); ganttUpdateDelBtn();
             }}
           }} else {{
-            delSel.forEach(w => fw.delete(w));
+            // Edge-trim only: shrink bar from start or end to maintain contiguity
+            const allFw = [...fw].sort((a,b) => a-b);
+            if (allFw.length > 0) {{
+              let newMin = allFw[0], newMax = allFw[allFw.length-1];
+              while (delSel.has(newMin) && newMin <= newMax) newMin++;
+              while (delSel.has(newMax) && newMax >= newMin) newMax--;
+              const newFW = new Set();
+              if (newMin <= newMax) for (let w = newMin; w <= newMax; w++) newFW.add(w);
+              filledWeeks[tid] = newFW;
+            }}
             delSel.clear(); ganttUpdateDelBtn();
             if (data.category === 'Stress') {{
               if (_getPrecondTids().includes(tid)) {{
