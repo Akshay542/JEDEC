@@ -3985,6 +3985,9 @@ class ProjectTrackerHandler(Base):
             if sd:
                 _db.save_meta(p["id"], gantt_start_date=sd)
         elif action == "add":
+            _n_mode = self.get_argument("n_mode", "auto").strip() or "auto"
+            _n_cust_raw = self.get_argument("n_custom", "").strip()
+            _n_cust = int(_n_cust_raw) if _n_cust_raw.isdigit() else None
             _db.add_gantt_task(
                 p["id"],
                 task_name  = self.get_argument("task_name", "New Task"),
@@ -3992,6 +3995,8 @@ class ProjectTrackerHandler(Base):
                 start_week = int(self.get_argument("start_week", "1")),
                 duration   = int(self.get_argument("duration", "1")),
                 status     = self.get_argument("status", "not_started"),
+                n_mode     = _n_mode,
+                n_custom   = _n_cust,
             )
         elif action == "undo":
             entry = _db.pop_gantt_history(p["id"])
@@ -4005,6 +4010,8 @@ class ProjectTrackerHandler(Base):
                         test_key=t.get("test_key",""),
                         start_week=t["start_week"], duration=t["duration"],
                         status=t["status"],
+                        n_mode=t.get("n_mode","auto") or "auto",
+                        n_custom=t.get("n_custom"),
                     )
                 elif atype == "edit_task":
                     t = snapshot
@@ -4014,6 +4021,8 @@ class ProjectTrackerHandler(Base):
                         test_key=t.get("test_key",""),
                         start_week=t["start_week"], duration=t["duration"],
                         status=t["status"],
+                        n_mode=t.get("n_mode","auto") or "auto",
+                        n_custom=t.get("n_custom"),
                     )
                 elif atype == "clear":
                     _db.clear_gantt_tasks(p["id"])
@@ -4023,6 +4032,8 @@ class ProjectTrackerHandler(Base):
                             test_key=t.get("test_key",""),
                             start_week=t["start_week"], duration=t["duration"],
                             status=t["status"],
+                            n_mode=t.get("n_mode","auto") or "auto",
+                            n_custom=t.get("n_custom"),
                         )
         elif action == "test_start":
             from datetime import datetime as _dt
@@ -4187,13 +4198,27 @@ class ProjectTrackerHandler(Base):
                 safe_name = t["task_name"].replace("'", "\\'")
                 cat_hint  = ("· " + t["category"]) if t["category"] else ""
                 tkey      = t.get("test_key", "") or ""
-                if tkey:
-                    raw = sample_counts.get(tkey, None)
+                n_mode_t  = t.get("n_mode", "auto") or "auto"
+                n_cust_t  = t.get("n_custom", None)
+                if n_mode_t == "total":
+                    n_samp = str(total_n) if total_n > 0 else "TBD"
+                elif n_mode_t == "test":
+                    raw   = sample_counts.get(tkey, None) if tkey else None
                     n_val = _extract_n(raw) if raw is not None else 0
                     n_samp = str(n_val) if n_val > 0 else "TBD"
-                else:
-                    # Prep/analysis tasks with no test key → show total n
-                    n_samp = str(total_n) if total_n > 0 else "TBD"
+                elif n_mode_t == "custom":
+                    try:
+                        cv = int(n_cust_t)
+                        n_samp = str(cv) if cv > 0 else "TBD"
+                    except (TypeError, ValueError):
+                        n_samp = "TBD"
+                else:  # 'auto' — test_key → per-test; otherwise total
+                    if tkey:
+                        raw   = sample_counts.get(tkey, None)
+                        n_val = _extract_n(raw) if raw is not None else 0
+                        n_samp = str(n_val) if n_val > 0 else "TBD"
+                    else:
+                        n_samp = str(total_n) if total_n > 0 else "TBD"
                 # Always show the n= pill; grey it out when TBD
                 if n_samp == "TBD":
                     samp_pill = (
@@ -4231,8 +4256,11 @@ class ProjectTrackerHandler(Base):
                     f'<td style="padding:6px 4px;text-align:center;white-space:nowrap">'
                     f'<button class="btn btn-sm" style="padding:2px 7px;font-size:.73rem;'
                     f'border:1px solid #e0e0e0;border-radius:4px;background:#fff" '
-                    f"onclick=\"event.stopPropagation();openEditModal({tid_},'{safe_name}','{t['category']}',"
-                    f"{t['start_week']},{t['duration']},'{t['status']}')\""
+                    f"onclick=\"event.stopPropagation();"
+                    f"openEditModal({tid_},'{safe_name}','{t['category']}',"
+                    f"{t['start_week']},{t['duration']},'{t['status']}',"
+                    f"'{t.get('n_mode','auto') or 'auto'}',"
+                    f"{t['n_custom'] if t.get('n_custom') is not None else 'null'})\""
                     f'>Edit</button> '
                     f'<form method="post" action="/projects/{pid}/tracker/task/{tid_}/delete"'
                     f' class="d-inline" onsubmit="return confirm(\'Delete task?\')">'
@@ -4536,6 +4564,21 @@ class ProjectTrackerHandler(Base):
                       {status_opts_html}
                     </select>
                   </div>
+                  <div class="mt-3">
+                    <label class="form-label" style="font-size:.83rem">Sample Size (n)</label>
+                    <select class="form-select form-select-sm" name="n_mode" id="e_nmode"
+                            onchange="toggleNcust()">
+                      <option value="auto">Auto — test key → per-test, else total</option>
+                      <option value="total">Total — all tests combined</option>
+                      <option value="test">This test only</option>
+                      <option value="custom">Custom number</option>
+                    </select>
+                  </div>
+                  <div class="mt-2" id="e_ncust_div" style="display:none">
+                    <label class="form-label" style="font-size:.8rem">Custom n</label>
+                    <input type="number" class="form-control form-control-sm" name="n_custom"
+                           id="e_ncust" min="1" placeholder="e.g. 45">
+                  </div>
                 </div>
                 <div class="modal-footer">
                   <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -4615,6 +4658,21 @@ class ProjectTrackerHandler(Base):
                   {status_opts_html}
                 </select>
               </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label mb-1" style="font-size:.78rem">Sample Size (n)</label>
+                <select class="form-select form-select-sm" name="n_mode"
+                        onchange="toggleAddNcust(this)">
+                  <option value="auto">Auto</option>
+                  <option value="total">Total (all tests)</option>
+                  <option value="test">This test only</option>
+                  <option value="custom">Custom number</option>
+                </select>
+              </div>
+              <div class="col-6 col-md-1" id="add_ncust_div" style="display:none">
+                <label class="form-label mb-1" style="font-size:.78rem">Custom n</label>
+                <input type="number" class="form-control form-control-sm" name="n_custom"
+                       id="add_ncust" min="1" placeholder="—">
+              </div>
               <div class="col-12 col-md-2">
                 <button class="btn btn-sm w-100"
                   style="background:var(--df-accent);color:#fff;border:none">Add Task</button>
@@ -4672,12 +4730,26 @@ class ProjectTrackerHandler(Base):
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
         <script>
         // ── Edit-task modal ──────────────────────────────────────────────────────
-        function openEditModal(tid, name, cat, sw, dur, status) {{
+        function toggleNcust() {{
+          var mode = document.getElementById('e_nmode').value;
+          document.getElementById('e_ncust_div').style.display =
+            mode === 'custom' ? '' : 'none';
+        }}
+        function toggleAddNcust(sel) {{
+          document.getElementById('add_ncust_div').style.display =
+            sel.value === 'custom' ? '' : 'none';
+        }}
+
+        function openEditModal(tid, name, cat, sw, dur, status, nmode, ncust) {{
           document.getElementById('e_name').value   = name;
           document.getElementById('e_cat').value    = cat;
           document.getElementById('e_sw').value     = sw;
           document.getElementById('e_dur').value    = dur;
           document.getElementById('e_status').value = status;
+          document.getElementById('e_nmode').value  = nmode || 'auto';
+          document.getElementById('e_ncust').value  =
+            (ncust !== null && ncust !== undefined) ? ncust : '';
+          toggleNcust();
           document.getElementById('editForm').action =
             '/projects/{pid}/tracker/task/' + tid + '/edit';
           bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
@@ -4962,6 +5034,9 @@ class ProjectTaskHandler(Base):
         elif action == "edit":
             if prev:
                 _db.push_gantt_history(p["id"], "edit_task", prev)
+            _nm = self.get_argument("n_mode", "auto").strip() or "auto"
+            _nc_raw = self.get_argument("n_custom", "").strip()
+            _nc = int(_nc_raw) if _nc_raw.isdigit() else None
             _db.update_gantt_task(
                 tid, p["id"],
                 task_name  = self.get_argument("task_name",  ""),
@@ -4969,6 +5044,8 @@ class ProjectTaskHandler(Base):
                 start_week = int(self.get_argument("start_week",  "1")),
                 duration   = int(self.get_argument("duration",    "1")),
                 status     = self.get_argument("status", "not_started"),
+                n_mode     = _nm,
+                n_custom   = _nc,
             )
         self.redirect(f"/projects/{p['id']}/tracker")
 
