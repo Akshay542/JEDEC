@@ -3895,8 +3895,6 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
             "Preparation", "", cw(total / 4)),   # 1 day per 4 samples
         ("CSAM",
             "Preparation", "", cw(total / 20)),
-        ("Preconditioning + CSAM",
-            "Stress", "", 2),
     ]
 
     result, sw = [], 1
@@ -3910,6 +3908,25 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
     #             post_csam_name, post_test_name, test_key, post_test_dur)
     # Post steps split: CSAM (1 wk) → Testing (1 day/sample → weeks)
     stress_start = sw
+    # Preconditioning (Stress) + Post-PC CSAM (Analysis) — both use total n
+    precond_idx = len(result)
+    result.append({
+        "task_name":  "Preconditioning",
+        "category":   "Stress",
+        "test_key":   "pc",
+        "start_week": stress_start,
+        "duration":   2,
+        "n_mode":     "total",
+    })
+    result.append({
+        "task_name":   "Post-PC CSAM",
+        "category":    "Analysis",
+        "test_key":    "pc",
+        "start_week":  stress_start + 2,
+        "duration":    1,
+        "n_mode":      "total",
+        "_parent_idx": precond_idx,
+    })
     pairs = [
         ("uHAST",    "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
         ("TC",       "tc",     6, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
@@ -4268,6 +4285,10 @@ class ProjectTrackerHandler(Base):
             f'<option value="{t["id"]}">{t["task_name"]}</option>' for t in _stress_gnt
         )
 
+        # Stress tests by key for dropdown population
+        _proj_stress_tests = {k: v["name"] for k, v in applicable_tests(p.get("part_type", "active")).items()}
+        _proj_stress_tests_js = _json_.dumps(_proj_stress_tests)
+
         # ── Task sidebar rows ──────────────────────────────────────────────
         if tasks:
             task_rows = ""
@@ -4340,7 +4361,8 @@ class ProjectTrackerHandler(Base):
                     f"{t['start_week']},{t['duration']},'{t['status']}',"
                     f"'{t.get('n_mode','auto') or 'auto'}',"
                     f"{t['n_custom'] if t.get('n_custom') is not None else 'null'},"
-                    f"{t.get('parent_task_id') or 'null'})\""
+                    f"{t.get('parent_task_id') or 'null'},"
+                    f"'{t.get('test_key','') or ''}')\""
                     f'>Edit</button> '
                     f'<form method="post" action="/projects/{pid}/tracker/task/{tid_}/delete"'
                     f' class="d-inline" onsubmit="return confirm(\'Delete task?\')">'
@@ -4602,10 +4624,6 @@ class ProjectTrackerHandler(Base):
                 </div>
                 <div class="modal-body">
                   <div class="mb-3">
-                    <label class="form-label" style="font-size:.83rem">Task Name</label>
-                    <input type="text" class="form-control form-control-sm" name="task_name" id="e_name" required>
-                  </div>
-                  <div class="mb-3">
                     <label class="form-label" style="font-size:.83rem">Category</label>
                     <select class="form-select form-select-sm" name="category" id="e_cat"
                             onchange="onEditCatChange()">
@@ -4616,6 +4634,18 @@ class ProjectTrackerHandler(Base):
                       <option value="Reporting">Reporting</option>
                     </select>
                   </div>
+                  <div class="mb-3" id="e_name_div">
+                    <label class="form-label" style="font-size:.83rem">Task Name</label>
+                    <input type="text" class="form-control form-control-sm" name="task_name" id="e_name" required>
+                  </div>
+                  <div class="mb-3" id="e_stress_div" style="display:none">
+                    <label class="form-label" style="font-size:.83rem">Stress Test</label>
+                    <select class="form-select form-select-sm" id="e_stress_sel" onchange="onEditStressSelChange()">
+                      <option value="">— select test —</option>
+                      <option value="_other">Other Test...</option>
+                    </select>
+                  </div>
+                  <input type="hidden" name="test_key" id="e_test_key">
                   <div class="row g-2">
                     <div class="col">
                       <label class="form-label" style="font-size:.83rem">Start Week</label>
@@ -4742,13 +4772,8 @@ class ProjectTrackerHandler(Base):
         <!-- Add task panel -->
         <div class="collapse mb-3" id="addTaskPanel">
           <div class="card card-body p-3" style="border:1px solid var(--df-border)">
-            <form method="post" action="/projects/{pid}/tracker" class="row g-2 align-items-end">
+            <form method="post" action="/projects/{pid}/tracker" class="row g-2 align-items-end" onsubmit="syncAddTaskName()">
               <input type="hidden" name="action" value="add">
-              <div class="col-12 col-md-4">
-                <label class="form-label mb-1" style="font-size:.78rem">Task Name</label>
-                <input type="text" class="form-control form-control-sm" name="task_name"
-                       placeholder="e.g. Temperature Cycling" required>
-              </div>
               <div class="col-6 col-md-2">
                 <label class="form-label mb-1" style="font-size:.78rem">Category</label>
                 <select class="form-select form-select-sm" name="category" id="add_cat"
@@ -4760,6 +4785,20 @@ class ProjectTrackerHandler(Base):
                   <option value="Reporting">Reporting</option>
                 </select>
               </div>
+              <div class="col-12 col-md-4" id="add_name_div">
+                <label class="form-label mb-1" style="font-size:.78rem">Task Name</label>
+                <input type="text" class="form-control form-control-sm" id="add_name_text"
+                       placeholder="e.g. Temperature Cycling" required>
+              </div>
+              <div class="col-12 col-md-4" id="add_stress_div" style="display:none">
+                <label class="form-label mb-1" style="font-size:.78rem">Stress Test</label>
+                <select class="form-select form-select-sm" id="add_stress_sel" onchange="onAddStressSelChange()">
+                  <option value="">— select test —</option>
+                  <option value="_other">Other Test...</option>
+                </select>
+              </div>
+              <input type="hidden" name="task_name" id="add_task_name_val">
+              <input type="hidden" name="test_key" id="add_test_key">
               <div class="col-6 col-md-1">
                 <label class="form-label mb-1" style="font-size:.78rem">Start Wk</label>
                 <input type="number" class="form-control form-control-sm" name="start_week"
@@ -4858,6 +4897,7 @@ class ProjectTrackerHandler(Base):
         const PREP_ORDER       = {_prep_order_js};
         const STRESS_TASKS     = {_stress_tasks_js};
         const STRESS_END_BY_ID = {_stress_end_by_id_js};
+        const PROJ_STRESS_TESTS = {_proj_stress_tests_js};
         let   prepChainEnd     = {_prep_chain_end};
         const reportingGate    = {_reporting_gate};
 
@@ -4910,6 +4950,18 @@ class ProjectTrackerHandler(Base):
           const pd = document.getElementById('e_parent_div');
           if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
           if (cat === 'Analysis') populateEditParentSel(null);
+          // stress name dropdown
+          const nd = document.getElementById('e_name_div');
+          const sd = document.getElementById('e_stress_div');
+          if (cat === 'Stress') {{
+            populateEditStressSel(null, '');
+            if (nd) nd.style.display = 'none';
+            if (sd) sd.style.display = '';
+          }} else {{
+            if (nd) nd.style.display = '';
+            if (sd) sd.style.display = 'none';
+            document.getElementById('e_test_key').value = '';
+          }}
         }}
         function onAddCatChange() {{
           const cat = document.getElementById('add_cat').value;
@@ -4922,6 +4974,28 @@ class ProjectTrackerHandler(Base):
           }}
           const pd = document.getElementById('add_parent_div');
           if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
+          // stress name dropdown
+          const nd = document.getElementById('add_name_div');
+          const sd = document.getElementById('add_stress_div');
+          if (cat === 'Stress') {{
+            // populate stress sel options
+            const stressSel = document.getElementById('add_stress_sel');
+            if (stressSel && stressSel.options.length <= 1) {{ // only placeholder
+              Object.entries(PROJ_STRESS_TESTS).forEach(([k, name]) => {{
+                const o = document.createElement('option');
+                o.value = k; o.textContent = name;
+                stressSel.insertBefore(o, stressSel.lastElementChild); // before "Other Test..."
+              }});
+            }}
+            if (nd) nd.style.display = 'none';
+            if (sd) sd.style.display = '';
+            document.getElementById('add_name_text').value = '';
+          }} else {{
+            if (nd) nd.style.display = '';
+            if (sd) sd.style.display = 'none';
+            const testKeyInput = document.getElementById('add_test_key');
+            if (testKeyInput) testKeyInput.value = '';
+          }}
           // Auto-set start week based on dependency rules
           const swEl = document.getElementById('add_sw');
           if (swEl) {{
@@ -4939,6 +5013,28 @@ class ProjectTrackerHandler(Base):
             }}
           }}
         }}
+        function onAddStressSelChange() {{
+          const sel = document.getElementById('add_stress_sel');
+          const nameInput = document.getElementById('add_name_text');
+          const testKeyInput = document.getElementById('add_test_key');
+          if (sel.value === '_other' || !sel.value) {{
+            nameInput.value = '';
+            nameInput.placeholder = 'Custom test name';
+            document.getElementById('add_name_div').style.display = '';
+            if (testKeyInput) testKeyInput.value = '';
+          }} else {{
+            nameInput.value = PROJ_STRESS_TESTS[sel.value] || sel.value;
+            document.getElementById('add_name_div').style.display = 'none';
+            if (testKeyInput) testKeyInput.value = sel.value;
+          }}
+        }}
+
+        function syncAddTaskName() {{
+          const nameInput = document.getElementById('add_name_text');
+          const taskNameVal = document.getElementById('add_task_name_val');
+          if (taskNameVal) taskNameVal.value = nameInput.value;
+        }}
+
         function onAddParentChange() {{
           const sel = document.getElementById('add_parent_sel');
           const swEl = document.getElementById('add_sw');
@@ -4963,9 +5059,50 @@ class ProjectTrackerHandler(Base):
           }});
         }}
 
+        function populateEditStressSel(testKey, taskName) {{
+          const sel = document.getElementById('e_stress_sel');
+          if (!sel) return;
+          sel.innerHTML = '<option value="">— select test —</option>';
+          Object.entries(PROJ_STRESS_TESTS).forEach(([k, name]) => {{
+            const o = document.createElement('option');
+            o.value = k; o.textContent = name;
+            if (k === testKey) o.selected = true;
+            sel.appendChild(o);
+          }});
+          const other = document.createElement('option');
+          other.value = '_other'; other.textContent = 'Other Test...';
+          if (!testKey || !PROJ_STRESS_TESTS[testKey]) other.selected = true;
+          sel.appendChild(other);
+          // Sync name field
+          onEditStressSelChange(taskName);
+        }}
+
+        function onEditStressSelChange(customName) {{
+          const sel = document.getElementById('e_stress_sel');
+          if (!sel) return;
+          if (sel.value === '_other' || !sel.value) {{
+            document.getElementById('e_name').value = typeof customName === 'string' ? customName : '';
+            document.getElementById('e_name_div').style.display = '';
+            document.getElementById('e_test_key').value = '';
+          }} else {{
+            document.getElementById('e_name').value = PROJ_STRESS_TESTS[sel.value] || sel.value;
+            document.getElementById('e_name_div').style.display = 'none';
+            document.getElementById('e_test_key').value = sel.value;
+          }}
+        }}
+
         // ── Edit modal ────────────────────────────────────────────────────────────
-        function openEditModal(tid, name, cat, sw, dur, status, nmode, ncust, parentId) {{
-          document.getElementById('e_name').value   = name;
+        function openEditModal(tid, name, cat, sw, dur, status, nmode, ncust, parentId, testKey) {{
+          document.getElementById('e_test_key').value = testKey || '';
+          if (cat === 'Stress') {{
+            populateEditStressSel(testKey, name);
+            document.getElementById('e_name_div').style.display = 'none';
+            document.getElementById('e_stress_div').style.display = '';
+          }} else {{
+            document.getElementById('e_name').value = name;
+            document.getElementById('e_name_div').style.display = '';
+            document.getElementById('e_stress_div').style.display = 'none';
+          }}
           document.getElementById('e_cat').value    = cat;
           document.getElementById('e_sw').value     = sw;
           document.getElementById('e_dur').value    = dur;
@@ -5187,9 +5324,22 @@ class ProjectTrackerHandler(Base):
         const chartTable = document.getElementById('ganttChartTable');
         if (chartTable) {{
           chartTable.addEventListener('mousedown', e => {{
-            if (!editActive || !selTid) return;
+            if (!editActive) return;
             const cell = e.target.closest('[data-tid]');
-            if (!cell || String(cell.dataset.tid) !== String(selTid)) return;
+            if (!cell) return;
+            const cellTid = String(cell.dataset.tid);
+            // Auto-switch active row to whichever cell was clicked
+            if (cellTid !== String(selTid)) {{
+              if (selTid !== null) {{
+                const prev = document.getElementById('tr-' + selTid);
+                if (prev) prev.style.background = '';
+              }}
+              delSel.clear(); ganttUpdateDelBtn();
+              selTid = cellTid;
+              const row = document.getElementById('tr-' + selTid);
+              if (row) row.style.background = '#fef3c7';
+              ganttRenderAll();
+            }}
             e.preventDefault();
             const w = parseInt(cell.dataset.week);
             drag = {{tid: selTid, startW: w, curW: w, mode: null}};
