@@ -157,7 +157,7 @@ TESTS = {
         "destructive": True,
 
         "active_devices": False,
-        "notes": "",
+        "notes": "Transfer time between hot and cold extremes must not exceed 20 seconds.",
     },
     "mshock": {
         "name": "M-Shock",
