@@ -6,11 +6,22 @@ JEDEC reliability test calculator and qualification report generator.
 Run:  python3 jedec_web.py
 Open: http://localhost:5000
 
-Requires: tornado (stdlib-only otherwise — reportlab for PDF)
+Requires: tornado (stdlib-only otherwise — reportlab for PDF, openpyxl for Excel export)
 """
 
 from __future__ import annotations
 import os, sys, math, io, uuid, webbrowser, base64, hashlib
+
+# ── Auto-install optional dependencies if missing ─────────────────────────────
+def _ensure_pkg(import_name: str, pip_name: str) -> None:
+    try:
+        __import__(import_name)
+    except ImportError:
+        import subprocess
+        print(f"[startup] Installing {pip_name}…", flush=True)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name, "-q"])
+
+_ensure_pkg("openpyxl", "openpyxl")
 from datetime import datetime
 
 # ── Compatibility patch: Python 3.8 + macOS OpenSSL rejects usedforsecurity ──
