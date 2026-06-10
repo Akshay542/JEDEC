@@ -19,7 +19,17 @@ def _ensure_pkg(import_name: str, pip_name: str) -> None:
     except ImportError:
         import subprocess
         print(f"[startup] Installing {pip_name}…", flush=True)
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name, "-q"])
+        # Try system-wide first; fall back to --user if permission is denied.
+        for extra in ([], ["--user"]):
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", pip_name, "-q"] + extra,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                break
+        else:
+            print(f"[startup] WARNING: could not install {pip_name}. "
+                  f"Run:  pip install --user {pip_name}", flush=True)
 
 _ensure_pkg("openpyxl", "openpyxl")
 from datetime import datetime
