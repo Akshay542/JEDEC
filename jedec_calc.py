@@ -164,7 +164,7 @@ TESTS = {
         "full_name": "Mechanical Shock",
         "standard": "JESD22-B110B.01",
         "condition": "Service Condition B — 1500G peak, 0.5 ms half-sine pulse",
-        "duration": "468 total shocks (184 / 112 / 44 per orientation group)",
+        "duration": "30 shocks free state (5 pulses × ±X, ±Y, ±Z); or 12 shocks mounted state (2 pulses × ±X, ±Y, ±Z)",
         "sample_size": 5,
         "pass_criteria": "CSAM ≥95% bond area; Functionality: sensor reading within 5% of original (no heating); Thermal: sensor reading within 5% of original (with heating)",
         "pre_testing": "CSAM + Func + Thermal",
