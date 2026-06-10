@@ -3910,7 +3910,7 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
     result.append({
         "task_name":  "Preconditioning",
         "category":   "Stress",
-        "test_key":   "pc",
+        "test_key":   "precond",
         "start_week": stress_start,
         "duration":   2,
         "n_mode":     "total",
@@ -4227,9 +4227,9 @@ class ProjectTrackerHandler(Base):
         )
         _stress_end_by_id = {t["id"]: t["start_week"] + t["duration"] - 1 for t in _stress_gnt}
 
-        # Preconditioning = Stress tasks with test_key "pc";
+        # Preconditioning = Stress tasks with test_key "precond";
         # all other Stress tasks are gated by Preconditioning end.
-        _precond_ids = {t["id"] for t in _stress_gnt if (t.get("test_key") or "") == "pc"}
+        _precond_ids = {t["id"] for t in _stress_gnt if (t.get("test_key") or "") == "precond"}
         _precond_end = max(
             (_stress_end_by_id[i] for i in _precond_ids if i in _stress_end_by_id),
             default=_prep_chain_end
@@ -5263,7 +5263,7 @@ class ProjectTrackerHandler(Base):
         }}
         function _getPrecondTids() {{
           return STRESS_TASKS
-            .filter(t => (TASK_DATA[String(t.id)] || {{}}).test_key === 'pc')
+            .filter(t => (TASK_DATA[String(t.id)] || {{}}).test_key === 'precond')
             .map(t => String(t.id));
         }}
 
