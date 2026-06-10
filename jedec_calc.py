@@ -179,7 +179,7 @@ TESTS = {
         "full_name": "Variable Frequency Vibration",
         "standard": "JESD22-B103B.01",
         "condition": "Test Condition 1 — 20–2000 Hz, 0.060 mm / 1.5g amplitude",
-        "duration": "80 min per axis, 3 axes (20–2000 Hz sweep)",
+        "duration": "48 min total — 4 sweeps × 3 axes (X, Y, Z) = 12 sweeps × 4 min/sweep",
         "sample_size": 5,
         "pass_criteria": "CSAM ≥95% bond area; Functionality: sensor reading within 5% of original (no heating); Thermal: sensor reading within 5% of original (with heating)",
         "pre_testing": "CSAM + Func + Thermal",
@@ -187,7 +187,7 @@ TESTS = {
         "destructive": True,
 
         "active_devices": False,
-        "notes": "",
+        "notes": "Sweep rate: 1 decade/min, logarithmic. Each sweep traverses min→max→min frequency in 4 min. Tolerance ±10% on displacement or acceleration.",
     },
     "pc": {
         "name": "Pwr Cycling",
