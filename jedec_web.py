@@ -5728,13 +5728,11 @@ class ProjectTrackerXlsxHandler(Base):
                        end_row=HDR_ROW2,   end_column=3)
         ws.merge_cells(start_row=HDR_ROW1, start_column=4,
                        end_row=HDR_ROW2,   end_column=4)
-        # re-apply style to merged top-left cell (openpyxl needs it on the anchor)
+        # Re-apply style to anchor cells only — merged secondary cells are
+        # MergedCell objects in openpyxl and do not accept style attributes.
         for col in range(1, 5):
             c = ws.cell(row=HDR_ROW1, column=col)
             c.fill, c.font, c.alignment, c.border = \
-                info_hdr_fill, info_hdr_font, center, hdr_border
-            c2 = ws.cell(row=HDR_ROW2, column=col)
-            c2.fill, c2.font, c2.alignment, c2.border = \
                 info_hdr_fill, info_hdr_font, center, hdr_border
 
         # Month grouping in row 1 + week numbers in row 2
