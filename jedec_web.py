@@ -280,6 +280,38 @@ def _get_or_create(handler):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _get_gantt_anchor(pid: int):
+    """Return the Monday-aligned gantt anchor date for a project."""
+    from datetime import date, timedelta
+    meta = _db.get_meta(pid)
+    start_date_str = (meta.get("gantt_start_date") or "").strip()
+    try:
+        return date.fromisoformat(start_date_str)
+    except ValueError:
+        today = date.today()
+        return today - timedelta(days=today.weekday())
+
+
+def _iso_week_to_relative(anchor, iso_week: int) -> int:
+    """
+    Convert a submitted ISO week number to a 1-based relative week from anchor.
+
+    Year inference: if iso_week >= anchor's ISO week → same year as anchor.
+    Otherwise → anchor year + 1 (task scheduled into the following year).
+    """
+    from datetime import date
+    iso = anchor.isocalendar()
+    anchor_iso_week = iso[1]
+    anchor_year     = iso[0]
+    year = anchor_year if iso_week >= anchor_iso_week else anchor_year + 1
+    try:
+        target_monday = date.fromisocalendar(year, iso_week, 1)
+    except ValueError:
+        return 1
+    rel = (target_monday - anchor).days // 7 + 1
+    return max(1, rel)
+
+
 def _csam_eval(before_pc, after_pc, after_test):
     """
     Evaluate CSAM bonded area against threshold (95%).
@@ -4888,11 +4920,15 @@ class ProjectTrackerHandler(Base):
             _n_cust = int(_n_cust_raw) if _n_cust_raw.isdigit() else None
             _par_raw2 = self.get_argument("parent_task_id", "").strip()
             _par2 = int(_par_raw2) if _par_raw2.isdigit() else None
+            _add_anchor   = _get_gantt_anchor(p["id"])
+            _iso_sw_raw   = self.get_argument("start_week", "").strip()
+            _iso_sw       = int(_iso_sw_raw) if _iso_sw_raw.isdigit() else _add_anchor.isocalendar()[1]
+            _rel_sw       = _iso_week_to_relative(_add_anchor, _iso_sw)
             _db.add_gantt_task(
                 p["id"],
                 task_name  = self.get_argument("task_name", "New Task"),
                 category   = self.get_argument("category", ""),
-                start_week = int(self.get_argument("start_week", "1")),
+                start_week = _rel_sw,
                 duration   = int(self.get_argument("duration", "1")),
                 status     = self.get_argument("status", "not_started"),
                 n_mode     = _n_mode,
@@ -5015,6 +5051,13 @@ class ProjectTrackerHandler(Base):
         # Which week number is today (1-indexed from anchor)?
         days_since = (today - anchor).days
         current_week = max(1, days_since // 7 + 1) if days_since >= 0 else None
+
+        # ISO-week values passed to JS for form display/conversion
+        _epoch = date(1970, 1, 1)
+        anchor_epoch_ms  = int((anchor - _epoch).total_seconds() * 1000)
+        current_iso_week = today.isocalendar()[1]
+        anchor_iso_week  = anchor.isocalendar()[1]
+        anchor_year      = anchor.isocalendar()[0]
 
         # ── Chart width ────────────────────────────────────────────────────
         if tasks:
@@ -5542,9 +5585,9 @@ class ProjectTrackerHandler(Base):
                   <input type="hidden" name="test_key" id="e_test_key">
                   <div class="row g-2">
                     <div class="col">
-                      <label class="form-label" style="font-size:.83rem">Start Week</label>
+                      <label class="form-label" style="font-size:.83rem">Start Wk (ISO)</label>
                       <input type="number" class="form-control form-control-sm" name="start_week" id="e_sw"
-                             min="1" max="104">
+                             min="{current_iso_week}" max="53">
                     </div>
                     <div class="col">
                       <label class="form-label" style="font-size:.83rem">Duration (weeks)</label>
@@ -5674,9 +5717,9 @@ class ProjectTrackerHandler(Base):
               <input type="hidden" name="task_name" id="add_task_name_val">
               <input type="hidden" name="test_key" id="add_test_key">
               <div class="col-6 col-md-1">
-                <label class="form-label mb-1" style="font-size:.78rem">Start Wk</label>
+                <label class="form-label mb-1" style="font-size:.78rem">Wk # (ISO)</label>
                 <input type="number" class="form-control form-control-sm" name="start_week"
-                       id="add_sw" value="1" min="1">
+                       id="add_sw" value="{current_iso_week}" min="{current_iso_week}">
               </div>
               <div class="col-6 col-md-1">
                 <label class="form-label mb-1" style="font-size:.78rem">Duration</label>
@@ -5775,6 +5818,36 @@ class ProjectTrackerHandler(Base):
         let   prepChainEnd     = {_prep_chain_end};
         const reportingGate    = {_reporting_gate};
 
+        // ── ISO week helpers ──────────────────────────────────────────────────────
+        // Anchor date as JS milliseconds (Monday of project start week)
+        const ANCHOR_EPOCH_MS  = {anchor_epoch_ms};
+        const ANCHOR_ISO_WEEK  = {anchor_iso_week};
+        const ANCHOR_YEAR      = {anchor_year};
+        const CURRENT_ISO_WEEK = {current_iso_week};
+
+        // Convert a 1-based relative week (from anchor) to an ISO week number.
+        function relToIso(rel) {{
+          const ms  = ANCHOR_EPOCH_MS + (rel - 1) * 7 * 86400000;
+          const d   = new Date(ms);
+          // ISO week calculation (standard algorithm)
+          const tmp = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+          tmp.setUTCDate(tmp.getUTCDate() + 4 - (tmp.getUTCDay() || 7));
+          const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+          return Math.ceil((((tmp - yearStart) / 86400000) + 1) / 7);
+        }}
+
+        // Convert an ISO week number back to a 1-based relative week from anchor.
+        // Year inference: if isoWk >= ANCHOR_ISO_WEEK use anchor year, else anchor year+1.
+        function isoToRel(isoWk) {{
+          const year = (isoWk >= ANCHOR_ISO_WEEK) ? ANCHOR_YEAR : ANCHOR_YEAR + 1;
+          // Monday of ISO week: Jan 4 is always in week 1
+          const jan4    = new Date(Date.UTC(year, 0, 4));
+          const jan4dow = (jan4.getUTCDay() + 6) % 7;  // 0 = Mon
+          const targetMs = jan4.getTime() - jan4dow * 86400000 + (isoWk - 1) * 7 * 86400000;
+          const diffDays  = Math.round((targetMs - ANCHOR_EPOCH_MS) / 86400000);
+          return Math.max(1, Math.floor(diffDays / 7) + 1);
+        }}
+
         // ── State ─────────────────────────────────────────────────────────────────
         const filledWeeks  = {{}};
         const dirtyTids    = new Set();
@@ -5863,20 +5936,20 @@ class ProjectTrackerHandler(Base):
             const testKeyInput = document.getElementById('add_test_key');
             if (testKeyInput) testKeyInput.value = '';
           }}
-          // Auto-set start week based on dependency rules
+          // Auto-set start week based on dependency rules (display as ISO week)
           const swEl = document.getElementById('add_sw');
           if (swEl) {{
             if (cat === 'Preparation') {{
-              swEl.value = prepChainEnd + 1;
+              swEl.value = relToIso(prepChainEnd + 1);
             }} else if (cat === 'Stress') {{
-              swEl.value = prepChainEnd + 1;
+              swEl.value = relToIso(prepChainEnd + 1);
             }} else if (cat === 'Reporting') {{
-              swEl.value = reportingGate + 1;
+              swEl.value = relToIso(reportingGate + 1);
             }} else if (cat === 'Analysis') {{
               // Will be set when parent is selected; reset to blank for now
               swEl.value = '';
             }} else {{
-              swEl.value = 1;
+              swEl.value = CURRENT_ISO_WEEK;
             }}
           }}
         }}
@@ -5909,7 +5982,7 @@ class ProjectTrackerHandler(Base):
           const pid = sel.value;
           if (pid) {{
             const stressEnd = STRESS_END_BY_ID[String(pid)] || prepChainEnd;
-            swEl.value = stressEnd + 1;
+            swEl.value = relToIso(stressEnd + 1);
           }} else {{
             swEl.value = '';
           }}
@@ -5971,7 +6044,7 @@ class ProjectTrackerHandler(Base):
             document.getElementById('e_stress_div').style.display = 'none';
           }}
           document.getElementById('e_cat').value    = cat;
-          document.getElementById('e_sw').value     = sw;
+          document.getElementById('e_sw').value     = relToIso(sw);
           document.getElementById('e_dur').value    = dur;
           document.getElementById('e_status').value = status;
           document.getElementById('e_nmode').value  = nmode || 'auto';
@@ -6529,11 +6602,15 @@ class ProjectTaskHandler(Base):
             _nc = int(_nc_raw) if _nc_raw.isdigit() else None
             _par_raw = self.get_argument("parent_task_id", "").strip()
             _par = int(_par_raw) if _par_raw.isdigit() else None
+            _edit_anchor  = _get_gantt_anchor(p["id"])
+            _iso_sw_raw   = self.get_argument("start_week", "").strip()
+            _iso_sw       = int(_iso_sw_raw) if _iso_sw_raw.isdigit() else _edit_anchor.isocalendar()[1]
+            _rel_sw       = _iso_week_to_relative(_edit_anchor, _iso_sw)
             _db.update_gantt_task(
                 tid, p["id"],
                 task_name  = self.get_argument("task_name",  ""),
                 category   = self.get_argument("category",   ""),
-                start_week = int(self.get_argument("start_week",  "1")),
+                start_week = _rel_sw,
                 duration   = int(self.get_argument("duration",    "1")),
                 status     = self.get_argument("status", "not_started"),
                 n_mode     = _nm,

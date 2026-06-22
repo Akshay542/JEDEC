@@ -1,6 +1,9 @@
 # Database (local data, do not commit)
 jedec_projects.db
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # Archives
 *.zip
 

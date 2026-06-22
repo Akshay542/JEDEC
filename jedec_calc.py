@@ -10,37 +10,101 @@ import os
 from datetime import datetime
 
 # ─── Chi-squared statistics (pure stdlib, no dependencies) ───────────────────
+#
+# WHY CHI-SQUARED?
+# ─────────────────
+# JEDEC reliability qualification uses the chi-squared distribution to make
+# statistically rigorous statements like:
+#   "We tested N units and observed K failures. We are C% confident that
+#    the true failure rate in the population is no worse than (1 - R)."
+#
+# The connection to chi-squared comes from the Poisson process model of
+# failures. If failures occur randomly at a constant rate, the number of
+# failures k in a test of n units follows a Poisson distribution. The exact
+# confidence interval on the Poisson rate parameter maps directly to the
+# chi-squared distribution — this is a standard result in reliability
+# statistics (see MIL-HDBK-189C or JESD47I for the derivation).
+#
+# Specifically:  chi²(2k+2, C) is the C-th percentile of a chi-squared
+# distribution with 2(k+1) degrees of freedom. This value acts as an
+# upper bound on 2·n·λ (twice the total device-hours × failure rate),
+# which lets us back-calculate either the required sample size or the
+# demonstrated reliability after the test.
+#
+# BUILDING BLOCKS (bottom-up):
+#   1. _reg_gamma_inc   — regularized incomplete gamma function P(a,x)
+#   2. _chi2_cdf        — chi-squared CDF built on top of P(a,x)
+#   3. _chi2_ppf        — inverse CDF (quantile function), needed to find
+#                         the chi-squared value for a given confidence level
+#   4. min_sample_size / demonstrated_reliability — the JEDEC formulas
 
 def _reg_gamma_inc(a: float, x: float) -> float:
     """
     Regularized lower incomplete gamma function P(a, x).
-    Uses series expansion for x < a+1, continued fraction otherwise.
+
+    Definition:
+        P(a, x) = γ(a, x) / Γ(a)
+    where γ(a, x) = ∫₀ˣ t^(a-1) · e^(−t) dt  (lower incomplete gamma)
+    and   Γ(a)    = ∫₀^∞ t^(a-1) · e^(−t) dt  (complete gamma function)
+
+    P(a, x) ranges from 0 to 1 and is essentially a cumulative probability.
+    It is the foundation of the chi-squared CDF: chi2_cdf(x, df) = P(df/2, x/2).
+
+    Two numerically stable algorithms are used depending on where x sits
+    relative to a+1 (the crossover point where each method converges fastest):
+
+    x < a+1  →  Series expansion (converges quickly near x=0)
+    x ≥ a+1  →  Lentz continued fraction (converges quickly for large x)
+
+    Both algorithms work in log-space (using math.lgamma) to avoid overflow
+    when a is large.
     """
     if x < 0:
         return 0.0
     if x == 0:
         return 0.0
+
+    # math.lgamma(a) = ln(Γ(a)); used to normalize without computing Γ(a) directly,
+    # which would overflow for large a.
     log_gamma_a = math.lgamma(a)
 
     if x < a + 1.0:
-        # Series expansion
+        # ── Series expansion ──────────────────────────────────────────────────
+        # γ(a, x) = e^(−x) · x^a · Σ_{n=0}^∞  x^n / (a · (a+1) · … · (a+n))
+        #
+        # We accumulate the sum term-by-term. Each term = previous term × x/(a+n).
+        # 'delta' is the running sum; 'term' is the current term.
+        # We start with term = 1/a (the n=0 term after factoring out 1/a).
         ap = a
         delta = term = 1.0 / a
         for _ in range(200):
             ap += 1.0
-            term *= x / ap
+            term *= x / ap        # multiply by x/(a+n) to get next term
             delta += term
+            # Converged when the new term is negligible relative to the sum
             if abs(term) < abs(delta) * 1e-12:
                 break
+        # Multiply by the prefactor e^(−x) · x^a / Γ(a), done in log-space
         return delta * math.exp(-x + a * math.log(x) - log_gamma_a)
+
     else:
-        # Lentz continued fraction
+        # ── Lentz continued fraction for the upper incomplete gamma ───────────
+        # The UPPER incomplete gamma Γ(a,x) = Γ(a) − γ(a,x) has a continued
+        # fraction representation that converges well for x ≥ a+1:
+        #
+        #   Γ(a,x) = e^(−x) · x^a · CF
+        #
+        # where CF is evaluated using Lentz's algorithm, which builds the
+        # fraction iteratively without storing all terms at once.
+        #
+        # FPMIN guards against division by zero in the Lentz recurrence.
         FPMIN = 1e-300
-        b = x + 1.0 - a
+        b = x + 1.0 - a    # first term of the CF denominator
         c = 1.0 / FPMIN
         d = 1.0 / b
-        h = d
+        h = d               # h accumulates the CF value
         for i in range(1, 201):
+            # Numerator and denominator updates per Lentz recurrence
             an = -i * (i - a)
             b += 2.0
             d = an * d + b
@@ -50,13 +114,28 @@ def _reg_gamma_inc(a: float, x: float) -> float:
             d = 1.0 / d
             delta = d * c
             h *= delta
+            # Converged when the multiplicative update is essentially 1.0
             if abs(delta - 1.0) < 1e-12:
                 break
+        # h is now the continued fraction value for the UPPER incomplete gamma.
+        # Subtract from 1 to get the LOWER (regularized) value P(a,x).
         return 1.0 - math.exp(-x + a * math.log(x) - log_gamma_a) * h
 
 
 def _chi2_cdf(x: float, df: float) -> float:
-    """CDF of chi-squared distribution with df degrees of freedom."""
+    """
+    CDF of the chi-squared distribution with 'df' degrees of freedom.
+
+    The chi-squared distribution with ν degrees of freedom is a special case
+    of the gamma distribution: χ²(ν) = Gamma(shape=ν/2, rate=1/2).
+
+    Therefore its CDF is exactly the regularized lower incomplete gamma:
+        P(χ² ≤ x | ν) = P(ν/2, x/2)
+
+    In reliability context, df = 2(k+1) where k = number of failures observed.
+    The "+2" in the degrees of freedom accounts for the one-sided upper
+    confidence bound on the Poisson failure rate.
+    """
     if x <= 0:
         return 0.0
     return _reg_gamma_inc(df / 2.0, x / 2.0)
@@ -64,40 +143,73 @@ def _chi2_cdf(x: float, df: float) -> float:
 
 def _chi2_ppf(p: float, df: float) -> float:
     """
-    Inverse CDF (percent-point function) of chi-squared distribution.
-    Uses bisection with a warm start from Wilson-Hilferty approximation.
+    Inverse CDF (percent-point function / quantile function) of chi-squared.
+
+    Given a probability p and degrees of freedom df, returns x such that:
+        P(χ² ≤ x | df) = p
+
+    This is the critical value used in the JEDEC sample-size formula.
+    For example, _chi2_ppf(0.90, 2) ≈ 4.605, meaning there is a 90% chance
+    that a chi-squared variable with 2 d.f. is ≤ 4.605.
+
+    Algorithm: two-stage approach
+    ─────────────────────────────
+    Stage 1 — Wilson-Hilferty warm start:
+        The Wilson-Hilferty approximation transforms χ²(ν) to a near-normal
+        variable:  χ²(ν) ≈ ν · (z·√(2/(9ν)) + 1 − 2/(9ν))³
+        where z is the standard normal quantile for p.
+        The normal quantile z is computed via the Beasley-Springer-Moro (BSM)
+        rational approximation, which is accurate to ~5 decimal places.
+        This gives a starting estimate x0 that is usually within a few percent
+        of the true answer.
+
+    Stage 2 — Bisection refinement:
+        We bracket [lo, hi] around x0 and bisect until |hi - lo| < 1e-9,
+        using _chi2_cdf as the oracle. 100 iterations gives ~30 bits of
+        precision, more than enough for sample-size calculations.
     """
     if p <= 0:
         return 0.0
     if p >= 1:
         return math.inf
-    # Wilson-Hilferty normal approximation for warm start
+
+    # ── Stage 1: Wilson-Hilferty approximation for the normal quantile ────────
+    # h = 1 − 2/(9ν) is the mean of the cube-root-transformed chi-squared
     h = 1.0 - 2.0 / (9.0 * df)
-    # Approximate normal z for quantile p
-    # Using Beasley-Springer-Moro approximation
+
+    # BSM rational approximation for the standard normal quantile z = Φ⁻¹(p).
+    # Works by first computing z for the tail probability q = min(p, 1-p),
+    # then flipping sign if p > 0.5.
     q = p if p <= 0.5 else 1.0 - p
-    t = math.sqrt(-2.0 * math.log(q))
+    t = math.sqrt(-2.0 * math.log(q))   # initial transform
     c0, c1, c2 = 2.515517, 0.802853, 0.010328
     d1, d2, d3 = 1.432788, 0.189269, 0.001308
     z = t - (c0 + c1*t + c2*t*t) / (1.0 + d1*t + d2*t*t + d3*t*t*t)
     if p > 0.5:
         z = -z
+
+    # Apply Wilson-Hilferty: map z back to the chi-squared scale
     x0 = df * max(1e-6, (z * math.sqrt(1.0 / (9.0 * df)) + h) ** 3)
 
-    # Bisection refinement
+    # ── Stage 2: Bisection ────────────────────────────────────────────────────
+    # Set a bracket [lo, hi] that is guaranteed to contain the true root.
+    # Start hi at 4× the estimate; double it until the CDF exceeds p.
     lo, hi = 0.0, max(x0 * 4, df * 4, 100.0)
-    # Expand hi if needed
     while _chi2_cdf(hi, df) < p:
         hi *= 2.0
+
+    # Binary search: after each step, [lo, hi] still brackets the root.
     for _ in range(100):
         mid = (lo + hi) / 2.0
         if _chi2_cdf(mid, df) < p:
-            lo = mid
+            lo = mid   # root is above mid
         else:
-            hi = mid
+            hi = mid   # root is below mid
         if (hi - lo) < 1e-9:
             break
+
     return (lo + hi) / 2.0
+
 
 # ─── Preconditioning (universal precursor) ────────────────────────────────────
 
@@ -155,7 +267,6 @@ TESTS = {
         "pre_testing": "CSAM + Func + Thermal",
         "post_testing": "CSAM + Func + Thermal",
         "destructive": True,
-
         "active_devices": False,
         "notes": "Transfer time between hot and cold extremes must not exceed 20 seconds.",
     },
@@ -170,7 +281,6 @@ TESTS = {
         "pre_testing": "CSAM + Func + Thermal",
         "post_testing": "CSAM + Func + Thermal",
         "destructive": True,
-
         "active_devices": False,
         "notes": "",
     },
@@ -185,7 +295,6 @@ TESTS = {
         "pre_testing": "CSAM + Func + Thermal",
         "post_testing": "CSAM + Func + Thermal",
         "destructive": True,
-
         "active_devices": False,
         "notes": "Sweep rate: 1 decade/min, logarithmic. Each sweep traverses min→max→min frequency in 4 min. Tolerance ±10% on displacement or acceleration.",
     },
@@ -200,7 +309,6 @@ TESTS = {
         "pre_testing": "CSAM + Func + Thermal",
         "post_testing": "CSAM + Func + Thermal",
         "destructive": True,
-
         "active_devices": False,
         "notes": "Package level only for Phase 1",
     },
@@ -229,7 +337,6 @@ TESTS = {
         "pre_testing": "CSAM + Func + Thermal",
         "post_testing": "CSAM + Func + Thermal",
         "destructive": True,
-
         "active_devices": False,
         "notes": "Low priority for Phase 1",
     },
@@ -259,7 +366,6 @@ TESTS = {
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
-
         "active_devices": True,
         "notes": "",
     },
@@ -274,7 +380,6 @@ TESTS = {
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
-
         "active_devices": True,
         "notes": "",
     },
@@ -289,7 +394,6 @@ TESTS = {
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
-
         "active_devices": True,
         "notes": "",
     },
@@ -304,7 +408,6 @@ TESTS = {
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
-
         "active_devices": True,
         "notes": "",
     },
@@ -319,7 +422,6 @@ TESTS = {
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
-
         "active_devices": True,
         "notes": "",
     },
@@ -334,56 +436,192 @@ TESTS = {
         "pre_testing": "Functional",
         "post_testing": "Functional",
         "destructive": False,
-
         "active_devices": True,
         "notes": "",
     },
 }
 
 # ─── Statistical Core ─────────────────────────────────────────────────────────
+#
+# THE JEDEC RELIABILITY MODEL
+# ────────────────────────────
+# JEDEC qualification assumes the exponential reliability model:
+#   R(t) = e^(−λt)
+# where λ is the constant failure rate and t is time (or cycles).
+# Under this model, reliability R is simply the probability that a single
+# unit survives the test duration.
+#
+# CONFIDENCE INTERVALS VIA THE POISSON / CHI-SQUARED CONNECTION
+# ──────────────────────────────────────────────────────────────
+# If we test n units and observe k failures, the maximum-likelihood estimate
+# of λ is k/n. But for qualification purposes we need a one-sided upper
+# confidence bound — i.e., we want to be C% confident that the TRUE failure
+# rate is no worse than λ_upper.
+#
+# The exact upper bound on a Poisson rate at confidence C with k observed
+# events is:  λ_upper = χ²(2k+2, C) / (2n)
+#
+# Substituting into R = e^(−λ):
+#   R_demonstrated = exp(−χ²(2k+2, C) / (2n))
+#
+# This is the core equation used throughout. The "+2" in the degrees of
+# freedom (rather than 2k) gives the one-sided upper bound; it accounts for
+# the possibility of the next failure occurring just after the test ends.
+#
+# ZERO-FAILURE TESTS (k=0, the most common JEDEC case)
+# ─────────────────────────────────────────────────────
+# When k=0:  df = 2(0+1) = 2, and χ²(2, 0.90) = −2·ln(0.10) ≈ 4.605
+# So:  n = 4.605 / (2·|ln R|)
+# For R=0.95, C=0.90:  n = 4.605 / (2·0.0513) ≈ 45 units
+# This is why you often see "45 units, zero failures" in JEDEC qual plans.
+
 
 def min_sample_size(reliability: float, confidence: float, failures: int = 0) -> int:
     """
-    Minimum samples to demonstrate R% reliability at C% confidence
-    with k allowed failures. Uses chi-squared (JEDEC-standard) method.
+    Minimum sample size to demonstrate reliability R at confidence C
+    with k allowed failures, using the JEDEC chi-squared method.
 
-    Formula: n = chi2(2k+2, C) / (2 * |ln R|)
+    Derivation:
+        We need R_demonstrated ≥ R, i.e.:
+            exp(−χ²(2k+2, C) / (2n)) ≥ R
+        Taking the natural log of both sides (and flipping the inequality
+        because ln is increasing and both sides are positive):
+            −χ²(2k+2, C) / (2n) ≥ ln(R)
+        Since R < 1, ln(R) < 0, so |ln(R)| = −ln(R):
+            n ≥ χ²(2k+2, C) / (2 · |ln R|)
+
+    Args:
+        reliability: Required reliability as a fraction, e.g. 0.95 = 95%.
+                     This is the minimum acceptable survival probability.
+        confidence:  Statistical confidence level, e.g. 0.90 = 90%.
+                     How sure we want to be that R is truly ≥ reliability.
+        failures:    Number of allowed failures during the test (k).
+                     0 is standard for JEDEC qual; more failures require
+                     proportionally more samples.
+
+    Returns:
+        Minimum integer number of units to test (ceiling of the formula).
+
+    Example:
+        min_sample_size(0.95, 0.90, 0) → 45
+        "Test 45 units with 0 failures to demonstrate 95% reliability
+         at 90% confidence."
     """
+    # χ²(2k+2, C): the C-th percentile of chi-squared with 2(k+1) degrees of freedom.
+    # This is the upper bound on 2·n·λ (the Poisson exposure parameter).
     chi2_val = _chi2_ppf(confidence, 2 * (failures + 1))
+
+    # |ln(R)| = −ln(R) since 0 < R < 1
     n = chi2_val / (2.0 * (-math.log(reliability)))
     return math.ceil(n)
 
 
 def demonstrated_reliability(n: int, failures: int, confidence: float) -> float:
     """
-    Demonstrated reliability given n tested, k failures, confidence C.
-    R = exp( -chi2(2k+2, C) / (2n) )
+    Reliability demonstrated by a completed test, given results.
+
+    This is the inverse of min_sample_size: instead of asking "how many units
+    do I need?", we ask "given that I tested n units and saw k failures, what
+    reliability did I actually prove at confidence C?"
+
+    Formula:
+        R = exp(−χ²(2k+2, C) / (2n))
+
+    Intuition:
+        - More units tested (larger n) → higher demonstrated R (better result)
+        - More failures observed (larger k) → lower demonstrated R (worse result)
+        - Higher confidence required (larger C) → lower demonstrated R
+          (because the chi-squared quantile grows with C, making the exponent
+           more negative)
+
+    Args:
+        n:          Number of units tested.
+        failures:   Number of failures observed (k).
+        confidence: Confidence level at which to evaluate, e.g. 0.90.
+
+    Returns:
+        Demonstrated reliability as a fraction in (0, 1).
+
+    Example:
+        demonstrated_reliability(45, 0, 0.90) → 0.9500...
+        "Testing 45 units with 0 failures demonstrates 95% reliability
+         at 90% confidence." (Matches the min_sample_size result above.)
     """
     chi2_val = _chi2_ppf(confidence, 2 * (failures + 1))
     return math.exp(-chi2_val / (2.0 * n))
 
 
 def pass_fail(n: int, failures: int, confidence: float, required_r: float):
+    """
+    Determine whether a test passes the reliability requirement.
+
+    Computes the demonstrated reliability and compares it to the required
+    threshold. A test PASSES if and only if:
+        demonstrated_reliability(n, failures, confidence) ≥ required_r
+
+    Returns:
+        (passed: bool, r_demonstrated: float)
+    """
     r_demo = demonstrated_reliability(n, failures, confidence)
     return r_demo >= required_r, r_demo
 
 
 def min_sample_size_ltpd(ltpd_pct: float, failures: int = 0) -> int:
     """
-    JESD47I §3.8 formula at fixed 90% confidence level:
-        N >= 0.5 × χ²(2C+2, 0.1) × (1/LTPD − 0.5) + C
-    where LTPD is the defect fraction (ltpd_pct / 100).
-    C = failures (acceptance number).
-    χ²(2C+2, 0.1) = chi-squared at 90th percentile with 2(C+1) d.f.
+    Sample size per the LTPD (Lot Tolerance Percent Defective) method,
+    as specified in JESD47I §3.8 at a fixed 90% confidence level.
+
+    LTPD vs. Chi-squared reliability method:
+    ─────────────────────────────────────────
+    The chi-squared method (min_sample_size above) asks:
+        "What fraction of units will survive?" (reliability perspective)
+
+    The LTPD method asks:
+        "What is the maximum defect rate we can tolerate?" (quality perspective)
+    LTPD is the defect fraction at which the consumer's risk (probability of
+    accepting a bad lot) equals exactly 10% — i.e., 90% confidence of rejection.
+
+    JESD47I §3.8 formula:
+        N ≥ 0.5 × χ²(2k+2, 0.10) × (1/LTPD − 0.5) + k
+
+    Note: χ²(2k+2, 0.10) uses the 10th percentile (lower tail) because
+    we are bounding the acceptable defect rate from above. This is equivalent
+    to inverting the consumer's risk at 10%.
+
+    The (1/LTPD − 0.5) factor is the JESD47I §3.8 approximation that
+    converts the Poisson parameter into a sample size; it is derived from
+    the exact binomial/Poisson relationship and converges to the exact
+    result for small LTPD values.
+
+    Args:
+        ltpd_pct: Maximum acceptable defect percentage, e.g. 5.0 = 5%.
+                  Lower LTPD = tighter quality requirement = more samples.
+        failures: Acceptance number (allowed failures), default 0.
+
+    Returns:
+        Minimum integer sample size.
+
+    Example:
+        min_sample_size_ltpd(5.0, 0) → 45
+        "Test 45 units with 0 failures to reject lots with >5% defective
+         at 90% confidence." (Matches JESD47I Table A, row k=0, LTPD=5%.)
     """
-    ltpd = ltpd_pct / 100.0
+    ltpd = ltpd_pct / 100.0  # convert percentage to fraction
+    # 10th percentile of chi-squared (lower tail = consumer's risk bound)
     chi2_val = _chi2_ppf(0.90, 2 * (failures + 1))
     n = 0.5 * chi2_val * (1.0 / ltpd - 0.5) + failures
     return math.ceil(n)
 
 
 # JESD47I Table A — Sample Size for Maximum % Defective at 90% Confidence Level
-TABLE_A_LTPD = [10, 7, 5, 3, 2, 1.5, 1]
+#
+# This is the pre-computed lookup table from JESD47I. Rows = number of allowed
+# failures (acceptance number k = 0–12). Columns = LTPD levels in percent.
+# Values are the minimum sample sizes computed by min_sample_size_ltpd().
+#
+# Use TABLE_A_LTPD to map column index → LTPD percent value.
+# Example: TABLE_A[0][2] = 45 means "k=0 failures, 5% LTPD → 45 samples"
+TABLE_A_LTPD = [10, 7, 5, 3, 2, 1.5, 1]   # LTPD % for each column
 TABLE_A = {
     0:  [22,  32,   45,   76,  114,  153,  230],
     1:  [38,  55,   77,  129,  194,  259,  389],
