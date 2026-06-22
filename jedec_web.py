@@ -254,6 +254,12 @@ _TEST_CONDITION_OPTIONS: dict[str, list[tuple[str, str]]] = {
                for k, v in PTC_CONDITIONS.items()],
     "thb":    [(k, f"Cond {k} — {v['temp_db']}°C / {v['rh']}% RH / {v['duration']}")
                for k, v in THB_CONDITIONS.items()],
+    "vib":    (
+        [(f"sin_{k}", f"Sin {k} — {v['fmin_hz']}–{v['fmax_hz']} Hz / {v['accel_g']}g / {v['disp_mm']} mm")
+         for k, v in VIB_SIN_CONDITIONS.items()]
+        + [(f"ran_{k}", f"Ran {k} — {v['rms_g']}g RMS")
+           for k, v in VIB_RAN_CONDITIONS.items()]
+    ),
 }
 
 # ── In-memory sessions ─────────────────────────────────────────────────────────
@@ -371,6 +377,8 @@ def _page(active: str, part_type: str, body: str, title: str = "Package Reliabil
         project_subnav = ""
     pt_label = {"ttv": "TTV", "die": "Die"}.get(part_type, "Active")
     pt_full  = {"ttv": "Thermal Test Vehicle", "die": "Die"}.get(part_type, "Active Device")
+    # Pill display: "TTV — Thermal Test Vehicle", "Die", "Active Device"
+    _pt_pill_label = (f"{pt_label} \u2014 {pt_full}" if pt_label != pt_full else pt_full)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -600,9 +608,13 @@ def _page(active: str, part_type: str, body: str, title: str = "Package Reliabil
     </button>
     <div class="collapse navbar-collapse" id="nb">
       <ul class="navbar-nav me-auto mb-0">{nav}</ul>
+      <button id="navbarAdminBtn" class="btn btn-sm me-2" onclick="ganttAdminLogin()"
+        style="border:1px solid #d1d5db;color:#6b7280;background:#fff;font-size:.78rem;padding:.25rem .6rem">
+        <i class="bi bi-shield-lock me-1"></i>Admin
+      </button>
       <a href="/part-type" class="pt-pill text-decoration-none">
         <span class="pt-dot" style="background:{"#c8432a" if part_type=="ttv" else "#8b5cf6" if part_type=="die" else "#2d7a4f"}"></span>
-        {pt_label} &mdash; {pt_full}
+        {_pt_pill_label}
         <i class="bi bi-pencil-square ms-1" style="font-size:.65rem"></i>
       </a>
     </div>
@@ -612,10 +624,91 @@ def _page(active: str, part_type: str, body: str, title: str = "Package Reliabil
 <div class="container-xl py-5">
 {body}
 </div>
+<!-- Global Admin Login Modal -->
+<div class="modal fade" id="adminLoginModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title mb-0"><i class="bi bi-shield-lock me-2"></i>Admin Login</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label" style="font-size:.83rem">Password</label>
+        <input type="password" class="form-control form-control-sm" id="adminPwInput"
+               placeholder="Enter password" onkeydown="if(event.key==='Enter')ganttAdminSubmit()">
+        <div id="adminPwError" style="display:none;font-size:.78rem;color:#dc2626;margin-top:6px">
+          Incorrect password.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm" onclick="ganttAdminSubmit()"
+          style="background:var(--df-accent);color:#fff;border:none">Unlock</button>
+      </div>
+    </div>
+  </div>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── Global admin state ───────────────────────────────────────────────────────
+var adminUnlocked = sessionStorage.getItem('ganttAdminUnlocked') === '1';
+
+function _applyNavbarAdminState() {{
+  var btn = document.getElementById('navbarAdminBtn');
+  if (!btn) return;
+  if (adminUnlocked) {{
+    btn.innerHTML = '<i class="bi bi-shield-fill-check me-1"></i>Admin';
+    btn.style.cssText = 'border:1px solid #16a34a;color:#15803d;background:#f0fdf4;font-size:.78rem;padding:.25rem .6rem';
+    btn.onclick = ganttAdminLogout;
+  }} else {{
+    btn.innerHTML = '<i class="bi bi-shield-lock me-1"></i>Admin';
+    btn.style.cssText = 'border:1px solid #d1d5db;color:#6b7280;background:#fff;font-size:.78rem;padding:.25rem .6rem';
+    btn.onclick = ganttAdminLogin;
+  }}
+}}
+
+function ganttAdminLogin() {{
+  document.getElementById('adminPwInput').value = '';
+  document.getElementById('adminPwError').style.display = 'none';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('adminLoginModal')).show();
+  setTimeout(function() {{ document.getElementById('adminPwInput').focus(); }}, 400);
+}}
+function ganttAdminSubmit() {{
+  var pw = document.getElementById('adminPwInput').value;
+  if (pw !== 'password') {{
+    document.getElementById('adminPwError').style.display = '';
+    return;
+  }}
+  adminUnlocked = true;
+  sessionStorage.setItem('ganttAdminUnlocked', '1');
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('adminLoginModal')).hide();
+  _applyNavbarAdminState();
+  _applyAdminGates();
+}}
+function ganttAdminLogout() {{
+  adminUnlocked = false;
+  sessionStorage.removeItem('ganttAdminUnlocked');
+  if (typeof editActive !== 'undefined' && editActive && typeof ganttDeactivateEdit === 'function') {{
+    ganttDeactivateEdit();
+  }}
+  _applyNavbarAdminState();
+  _applyAdminGates();
+}}
+
+// ── Admin-gate elements ──────────────────────────────────────────────────────
+// Elements with data-admin-gate="show"  → visible only for admins
+// Elements with data-admin-gate="hide"  → hidden only for admins  (unused currently)
+function _applyAdminGates() {{
+  document.querySelectorAll('[data-admin-gate="show"]').forEach(function(el) {{
+    el.style.display = adminUnlocked ? '' : 'none';
+  }});
+}}
+
 // ── Tab memory: remember last URL per top-level tab ─────────────────────────
 (function() {{
+  _applyNavbarAdminState();
+  _applyAdminGates();
+
   // Record current URL for whichever tab is active
   var activeTab = '{active}';
   if (activeTab) {{
@@ -760,8 +853,7 @@ class LookupHandler(Base):
             badges = ""
             if t["active_devices"]:
                 badges += '<span class="badge bg-info text-dark ms-2" style="font-size:.7rem">Active Device</span>'
-            if t["destructive"]:
-                badges += '<span class="badge bg-danger ms-2" style="font-size:.7rem">Destructive</span>'
+            # "Additional Reli Test Prohibited" shown only in the expanded detail panel, not as a header badge
             notes_row = f'<tr><th class="fw-normal text-muted pe-3">Notes</th><td>{t["notes"]}</td></tr>' if t["notes"] else ""
             spec_docs = SPEC_URLS.get(key, [])
             # Header badge links (small, shown in accordion button)
@@ -1082,7 +1174,7 @@ class LookupHandler(Base):
                         <tr><th class="fw-normal text-muted pe-3">Standard</th><td>{std_link}</td></tr>
                         <tr><th class="fw-normal text-muted pe-3">Condition</th>{condition_cell}</tr>
                         <tr><th class="fw-normal text-muted pe-3">Duration</th><td>{t['duration']}</td></tr>
-                        <tr><th class="fw-normal text-muted pe-3">Destructive</th><td>{'Yes' if t['destructive'] else 'No'}</td></tr>
+                        <tr><th class="fw-normal text-muted pe-3">Additional Reli Test Prohibited</th><td>{'Yes' if t['destructive'] else 'No'}</td></tr>
                       </table>
                     </div>
                     <div class="col-md-6">
@@ -1729,16 +1821,30 @@ class ReportHandler(Base):
                     r_demo    = demonstrated_reliability(n_val, k_val, _conf)
                     stat_pass, _ = _pf(n_val, k_val, _conf, _r_req)
 
+            # Manual pass/fail override (form field from clickable badge)
+            _ov_raw = self.get_argument(f"pass_override_{key}", "auto").strip()
+            if _ov_raw == "force_pass":
+                pass_override  = "force_pass"
+                effective_pass = True if r_demo is not None else None
+            elif _ov_raw == "force_fail":
+                pass_override  = "force_fail"
+                effective_pass = False if r_demo is not None else None
+            else:
+                pass_override  = "auto"
+                effective_pass = stat_pass
+
             entries.append({
                 "key": key, "test": t, "sc": sc, "status": label,
                 "n": n_val, "k": k_val, "notes": notes,
                 "r_demo": r_demo, "stat_pass": stat_pass,
+                "pass_override": pass_override, "effective_pass": effective_pass,
                 "corrected": corrected,
                 "is_char": is_char, "char_result": char_result,
             })
 
-            # Parse sample records (TTV only)
-            if pt == "ttv":
+            # Parse sample records (TTV and Die)
+            if pt in ("ttv", "die"):
+                is_ttv = (pt == "ttv")
                 samples_for_test = []
                 n_samples_key = f"n_samples_{key}"
                 n_samples_str = self.get_argument(n_samples_key, "0").strip() or "0"
@@ -1770,13 +1876,16 @@ class ReportHandler(Base):
 
                     csam_status, csam_badge = _csam_eval(csam_bpc, csam_apc, csam_atst)
 
-                    # Thermal and Func
-                    thermal = self.get_argument(f"thermal_{key}_{i}", "pass").strip() or "pass"
-                    func = self.get_argument(f"func_{key}_{i}", "pass").strip() or "pass"
-
-                    # Failed RTDs
-                    failed_rtds_str = self.get_argument(f"failed_rtds_{key}_{i}", "").strip()
-                    failed_rtds = [x.strip().upper() for x in failed_rtds_str.split(",") if x.strip()]
+                    # Thermal and Func (TTV only; Die uses CSAM-only pass logic)
+                    if is_ttv:
+                        thermal = self.get_argument(f"thermal_{key}_{i}", "pass").strip() or "pass"
+                        func    = self.get_argument(f"func_{key}_{i}", "pass").strip() or "pass"
+                        failed_rtds_str = self.get_argument(f"failed_rtds_{key}_{i}", "").strip()
+                        failed_rtds = [x.strip().upper() for x in failed_rtds_str.split(",") if x.strip()]
+                    else:
+                        thermal = "pass"
+                        func    = "pass"
+                        failed_rtds = []
 
                     # File uploads (base64)
                     img_bpc = ""
@@ -1814,8 +1923,22 @@ class ReportHandler(Base):
 
                 samples[key] = samples_for_test
 
-        _r_conf = getattr(self, "_qual_confidence", 0.90)
-        _r_ltpd = getattr(self, "_qual_ltpd", 5.0)
+        _r_conf  = getattr(self, "_qual_confidence", 0.90)
+        _r_ltpd  = getattr(self, "_qual_ltpd", 5.0)
+        _r_conds = getattr(self, "_test_conditions", {})
+        _stat_mode = self.get_argument("stat_mode", "full").strip()
+        _show_stats = (_stat_mode != "pf_only")
+
+        # Pass/fail counts depend on mode:
+        # full    → chi-squared effective_pass (respects manual override)
+        # pf_only → 0 failures = pass, any failures = fail (for Complete tests)
+        if _show_stats:
+            _n_pass = sum(1 for e in entries if e["sc"] == "co" and e.get("effective_pass") is True)
+            _n_fail = sum(1 for e in entries if e["sc"] == "co" and e.get("effective_pass") is False)
+        else:
+            _n_pass = sum(1 for e in entries if e["sc"] == "co" and not e.get("is_char") and (e.get("k") or 0) == 0)
+            _n_fail = sum(1 for e in entries if e["sc"] == "co" and not e.get("is_char") and (e.get("k") or 0) > 0)
+
         report = {
             "customer": customer, "product": product,
             "author": author, "part_type": pt,
@@ -1828,9 +1951,10 @@ class ReportHandler(Base):
             "qual_ltpd":       _r_ltpd,
             "qual_confidence": _r_conf,
             "qual_r_req":      1.0 - _r_ltpd / 100.0,
-            # Counts: pass/fail derived from stat_pass when status is Complete
-            "n_pass": sum(1 for e in entries if e["sc"] == "co" and e.get("stat_pass") is True),
-            "n_fail": sum(1 for e in entries if e["sc"] == "co" and e.get("stat_pass") is False),
+            "test_conditions": _r_conds,
+            "show_stats":      _show_stats,
+            "n_pass": _n_pass,
+            "n_fail": _n_fail,
             "n_co":   sum(1 for e in entries if e["sc"] == "co"),
             "n_ip":   sum(1 for e in entries if e["sc"] == "ip"),
             "n_ns":   sum(1 for e in entries if e["sc"] == "ns"),
@@ -1895,14 +2019,16 @@ class ReportHandler(Base):
                 char_hint = '<div class="text-muted small mt-1" style="font-style:italic">Characterization only — record warpage result in field above</div>'
             else:
                 k_cell = (
-                    '<td class="align-middle sf-' + key + '" style="min-width:100px">'
+                    '<td class="align-middle sf-' + key + '" style="min-width:130px">'
                     '<div class="d-flex align-items-center gap-1">'
                     '<input type="number" class="form-control form-control-sm k-input" name="k_' + key + '"'
                     ' id="k_' + key + '" value="0" min="0" placeholder="k" data-key="' + key + '"'
                     ' oninput="updatePF(\'' + key + '\')">'
+                    '<input type="hidden" name="pass_override_' + key + '" id="override_' + key + '" value="auto">'
                     '<span id="pf_' + key + '" style="font-size:.72rem;font-weight:700;'
                     'white-space:nowrap;padding:2px 7px;border-radius:4px;'
-                    'background:#f3f4f6;color:#6b7280">—</span>'
+                    'background:#f3f4f6;color:#6b7280;cursor:pointer;user-select:none" '
+                    'onclick="cycleOverride(\'' + key + '\')" title="Click to override">—</span>'
                     '</div>'
                     '</td>'
                 )
@@ -1977,6 +2103,25 @@ class ReportHandler(Base):
                   <label class="form-label">Prepared By</label>
                   <input type="text" class="form-control" name="author" placeholder="e.g. Reliability Engineering">
                 </div>
+                <div class="col-12">
+                  <label class="form-label mb-1">Report Mode</label>
+                  <div class="d-flex gap-3">
+                    <div class="form-check">
+                      <input class="form-check-input" type="radio" name="stat_mode" id="sm_full" value="full" checked>
+                      <label class="form-check-label" for="sm_full" style="font-size:.9rem">
+                        Include statistical analysis
+                        <small class="text-muted d-block" style="font-size:.78rem">Shows demonstrated reliability, confidence interval, and chi-squared pass/fail criteria</small>
+                      </label>
+                    </div>
+                    <div class="form-check">
+                      <input class="form-check-input" type="radio" name="stat_mode" id="sm_pf" value="pf_only">
+                      <label class="form-check-label" for="sm_pf" style="font-size:.9rem">
+                        Pass / Fail only
+                        <small class="text-muted d-block" style="font-size:.78rem">Shows n and failures per test — no confidence interval or statistical criteria</small>
+                      </label>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2046,18 +2191,29 @@ class ReportHandler(Base):
               </table>
             </div>
           </div>
-          <!-- Sample Records (TTV only) -->"""
+          <!-- Sample Records (TTV and Die) -->"""
 
-        if pt == "ttv":
+        if pt in ("ttv", "die"):
+            _is_ttv = (pt == "ttv")
+            _sr_desc = (
+                "<strong>CSAM:</strong> ≥95% bond area at all three timepoints.&ensp;"
+                "<strong>Functionality:</strong> sensor reading within 5% of original (no heating).&ensp;"
+                "<strong>Thermal:</strong> sensor reading within 5% of original (with heating)."
+                if _is_ttv else
+                "<strong>CSAM:</strong> ≥95% bond area at all three timepoints."
+            )
             body += f"""
           <div class="card mb-4">
             <div class="card-df"><h6 class="mb-0">Sample Records</h6></div>
             <div class="card-body p-4">
               <p style="font-size:.85rem;color:var(--df-grey);margin-bottom:1rem">
-                <strong>CSAM:</strong> ≥95% bond area at all three timepoints.&ensp;
-                <strong>Functionality:</strong> sensor reading within 5% of original (no heating).&ensp;
-                <strong>Thermal:</strong> sensor reading within 5% of original (with heating).
+                {_sr_desc}
               </p>"""
+
+            _ttv_extra_th = """
+                              <th style="min-width:70px">Thermal</th>
+                              <th style="min-width:120px">Failed Sensors</th>
+                              <th style="min-width:70px">Func</th>""" if _is_ttv else ""
 
             for key, t in tests.items():
                 body += f"""
@@ -2088,10 +2244,7 @@ class ReportHandler(Base):
                               <th style="min-width:100px">Sample ID</th>
                               <th style="min-width:110px">CSAM Before PC (%)</th>
                               <th style="min-width:110px">CSAM After PC (%)</th>
-                              <th style="min-width:110px">CSAM After Test (%)</th>
-                              <th style="min-width:70px">Thermal</th>
-                              <th style="min-width:120px">Failed Sensors</th>
-                              <th style="min-width:70px">Func</th>
+                              <th style="min-width:110px">CSAM After Test (%)</th>{_ttv_extra_th}
                               <th style="min-width:240px">Images</th>
                             </tr>
                           </thead>
@@ -2109,20 +2262,23 @@ class ReportHandler(Base):
           </div>
           <input type="hidden" id="part-type-input" value="{pt}">
           <script>
+            const _isTTV = {str(_is_ttv).lower()};
             function buildSampleRows(key, n) {{
               const tbody = document.getElementById('stbody_' + key);
               if (!tbody) return;
               tbody.innerHTML = '';
               for (let i = 0; i < n; i++) {{
                 const sid = 'SN-' + String(i+1).padStart(3,'0');
+                const ttvCells = _isTTV ? `
+                  <td><select class="form-select form-select-sm" name="thermal_${{key}}_${{i}}"><option value="pass">Pass</option><option value="fail">Fail</option></select></td>
+                  <td><input type="text" class="form-control form-control-sm" name="failed_rtds_${{key}}_${{i}}" placeholder="e.g. T3,T7"></td>
+                  <td><select class="form-select form-select-sm" name="func_${{key}}_${{i}}"><option value="pass">Pass</option><option value="fail">Fail</option></select></td>` : '';
                 tbody.innerHTML += `<tr>
                   <td><input type="text" class="form-control form-control-sm" name="sid_${{key}}_${{i}}" value="${{sid}}"></td>
                   <td><input type="number" class="form-control form-control-sm" name="csam_bpc_${{key}}_${{i}}" step="0.1" min="0" max="100" placeholder="—"></td>
                   <td><input type="number" class="form-control form-control-sm" name="csam_apc_${{key}}_${{i}}" step="0.1" min="0" max="100" placeholder="—"></td>
                   <td><input type="number" class="form-control form-control-sm" name="csam_atst_${{key}}_${{i}}" step="0.1" min="0" max="100" placeholder="—"></td>
-                  <td><select class="form-select form-select-sm" name="thermal_${{key}}_${{i}}"><option value="pass">Pass</option><option value="fail">Fail</option></select></td>
-                  <td><input type="text" class="form-control form-control-sm" name="failed_rtds_${{key}}_${{i}}" placeholder="e.g. T3,T7"></td>
-                  <td><select class="form-select form-select-sm" name="func_${{key}}_${{i}}"><option value="pass">Pass</option><option value="fail">Fail</option></select></td>
+                  ${{ttvCells}}
                   <td style="min-width:240px">
                     <div class="mb-1"><label style="font-size:.7rem">Pre-PC</label><input type="file" class="form-control form-control-sm" name="img_bpc_${{key}}_${{i}}" accept="image/*"></div>
                     <div class="mb-1"><label style="font-size:.7rem">Post-PC</label><input type="file" class="form-control form-control-sm" name="img_apc_${{key}}_${{i}}" accept="image/*"></div>
@@ -2164,32 +2320,54 @@ class ReportHandler(Base):
         const QUAL_CONF_PCT  = {_conf_pct_js};
         const QUAL_R_PCT     = {_r_req_pct_js};
 
-        // updatePF: compute and display automatic Pass/Fail badge from n and k inputs
+        // cycleOverride: click badge to cycle auto → force_pass → force_fail → auto
+        function cycleOverride(key) {{
+          const hidden = document.getElementById('override_' + key);
+          const nEl   = document.getElementById('n_' + key);
+          if (!hidden || !nEl) return;
+          if ((parseInt(nEl.value) || 0) === 0) return;
+          const cur = hidden.value;
+          hidden.value = cur === 'auto' ? 'force_pass' : cur === 'force_pass' ? 'force_fail' : 'auto';
+          updatePF(key);
+        }}
+
+        // updatePF: compute and display pass/fail badge, respecting manual override
         function updatePF(key) {{
-          const badge = document.getElementById('pf_' + key);
+          const badge  = document.getElementById('pf_' + key);
           if (!badge) return;  // characterization test, no badge
-          const nEl = document.getElementById('n_' + key);
-          const kEl = document.getElementById('k_' + key);
+          const nEl    = document.getElementById('n_' + key);
+          const kEl    = document.getElementById('k_' + key);
+          const hidden = document.getElementById('override_' + key);
           if (!nEl || !kEl) return;
           const n = parseInt(nEl.value) || 0;
           const k = parseInt(kEl.value) || 0;
           if (n === 0) {{
             badge.textContent = '—';
             badge.style.background = '#f3f4f6';
-            badge.style.color = '#6b7280';
-            badge.title = '';
+            badge.style.color      = '#6b7280';
+            badge.style.outline    = '';
+            badge.title = 'Click to override';
+            if (hidden) hidden.value = 'auto';
             return;
           }}
-          const minN = (k < MIN_N.length) ? MIN_N[k] : MIN_N[MIN_N.length - 1];
-          badge.title = `Need n≥${{minN}} to pass (≤${{QUAL_LTPD_PCT}}% defective @ ${{QUAL_CONF_PCT}}% CL)`;
-          if (n >= minN) {{
-            badge.textContent = 'PASS';
+          const minN     = (k < MIN_N.length) ? MIN_N[k] : MIN_N[MIN_N.length - 1];
+          const autoPass = n >= minN;
+          const override = hidden ? hidden.value : 'auto';
+          const isOverride = override !== 'auto';
+          const isPass = override === 'force_pass' ? true : override === 'force_fail' ? false : autoPass;
+
+          badge.title = isOverride
+            ? `Manually overridden — click to cycle (auto→pass→fail). Auto result: ${{autoPass ? 'PASS' : 'FAIL'}} (need n≥${{minN}})`
+            : `n≥${{minN}} needed to pass (≤${{QUAL_LTPD_PCT}}% defective @ ${{QUAL_CONF_PCT}}% CL). Click to override.`;
+          badge.style.outline = isOverride ? '2px solid #f97316' : '';
+          if (isPass) {{
+            badge.textContent    = isOverride ? '✓ PASS' : 'PASS';
             badge.style.background = '#dcfce7';
-            badge.style.color = '#15803d';
+            badge.style.color      = '#15803d';
           }} else {{
-            badge.textContent = 'FAIL';
+            badge.textContent    = isOverride ? '✗ FAIL' : 'FAIL';
             badge.style.background = '#fee2e2';
-            badge.style.color = '#b91c1c';
+            badge.style.color      = '#b91c1c';
           }}
         }}
 
@@ -2197,8 +2375,8 @@ class ReportHandler(Base):
           document.querySelectorAll('.status-sel').forEach(sel => {{
             const key = sel.dataset.key;
             const isChar = sel.dataset.char === 'true';
-            // Show n/k cells when status is in-progress, complete, or characterized
-            const show = isChar ? ['ip','ch'].includes(sel.value) : ['ip','co'].includes(sel.value);
+            // Show n/k cells only when status is complete (or characterized for char tests)
+            const show = isChar ? ['ip','ch'].includes(sel.value) : sel.value === 'co';
             document.querySelectorAll('.sf-' + key).forEach(cell => {{
               cell.style.opacity = show ? '1' : '0.4';
               cell.querySelectorAll('input').forEach(i => i.disabled = !show);
@@ -2211,7 +2389,7 @@ class ReportHandler(Base):
           s.addEventListener('change', function() {{
             const key = this.dataset.key;
             const isChar = this.dataset.char === 'true';
-            const show = isChar ? ['ip','ch'].includes(this.value) : ['ip','co'].includes(this.value);
+            const show = isChar ? ['ip','ch'].includes(this.value) : this.value === 'co';
             document.querySelectorAll('.sf-' + key).forEach(cell => {{
               cell.style.opacity = show ? '1' : '0.4';
               cell.querySelectorAll('input').forEach(i => i.disabled = !show);
@@ -2279,11 +2457,6 @@ class ReportHandler(Base):
             else:
                 nk = f"{e['n']} / {e['k']}" if e["n"] is not None else "—"
                 stat_cell = ""
-                if e["r_demo"] is not None:
-                    ok       = e["stat_pass"]
-                    res      = "PASS" if ok else "FAIL"
-                    _cl_lbl  = f'{r.get("qual_confidence", 0.90)*100:.0f}% CL'
-                    stat_cell = f' <small class="text-muted">({e["r_demo"]*100:.1f}% R @ {_cl_lbl} — <span class="{"text-success" if ok else "text-danger"}">{res}</span>)</small>'
             notes_td = f'<td class="text-muted small">{e["notes"]}</td>' if e["notes"] else '<td class="text-muted">—</td>'
             table_rows += f"""
             <tr>
@@ -2303,16 +2476,23 @@ class ReportHandler(Base):
         _q_ltpd_lbl = f'{_q_ltpd:g}%'
         stat_entries = [e for e in r["entries"] if e["r_demo"] is not None]
         stat_section = ""
-        if stat_entries:
+        if stat_entries and r.get("show_stats", True):
             srows = ""
             for e in stat_entries:
-                ok  = e["stat_pass"]
+                ok  = e.get("effective_pass", e.get("stat_pass"))
+                _is_ov = e.get("pass_override", "auto") != "auto"
+                _ov_badge = (' <span class="badge text-bg-warning" style="font-size:.62rem">override</span>'
+                             if _is_ov else "")
+                _stat_note = (f' <span class="text-muted" style="font-size:.78rem">'
+                              f'(auto: {"PASS" if e.get("stat_pass") else "FAIL"})</span>'
+                              if _is_ov else "")
                 srows += (
                     f'<tr><td class="fw-semibold">{e["test"]["name"]}</td>'
                     f'<td>{e["n"]}</td><td>{e["k"]}</td>'
                     f'<td>{e["r_demo"]*100:.2f}%</td>'
                     f'<td><span class="badge {"bg-success" if ok else "bg-danger"}">'
-                    f'{"PASS" if ok else "FAIL"}</span> vs {_q_rreq_lbl} R @ {_q_conf_lbl} CL</td></tr>'
+                    f'{"PASS" if ok else "FAIL"}</span>{_ov_badge}'
+                    f' vs {_q_rreq_lbl} R @ {_q_conf_lbl} CL{_stat_note}</td></tr>'
                 )
             stat_section = f"""
             <h6 class="text-muted mt-4 mb-2" style="font-size:.8rem;letter-spacing:.05em;text-transform:uppercase">Statistical Details ({_q_conf_lbl} confidence, {_q_rreq_lbl} reliability target — LTPD {_q_ltpd_lbl})</h6>
@@ -2386,9 +2566,29 @@ class ReportHandler(Base):
           <div style="background:var(--df-bg);border-left:3px solid var(--df-border);padding:.75rem 1rem;margin-bottom:1.5rem;font-size:.85rem">
             <div style="font-weight:600;margin-bottom:.5rem">Active Device</div>
             <div style="color:var(--df-grey);margin-bottom:.25rem">Part Number: {pn}</div>
-            <div style="color:var(--df-grey);margin-bottom:.25rem">Technology Node: {pt_node}</div>
             <div style="color:var(--df-grey)">Package Type: {pkg}</div>
           </div>"""
+
+        # Build "Tests Performed" rows
+        _tc = r.get("test_conditions", {})
+        def _cond_label(key):
+            ckey = _tc.get(key, "")
+            opts = _TEST_CONDITION_OPTIONS.get(key, [])
+            lbl  = next((lbl for k, lbl in opts if k == ckey), ckey)
+            return lbl or "—"
+        def _dur_label(key):
+            t_info = TESTS.get(key, {})
+            return t_info.get("duration", "—")
+
+        tp_rows = ""
+        for e in r["entries"]:
+            tp_rows += (
+                f'<tr>'
+                f'<td class="fw-semibold" style="white-space:nowrap">{e["test"]["name"]}</td>'
+                f'<td class="text-muted small">{_cond_label(e["key"])}</td>'
+                f'<td class="text-muted small">{_dur_label(e["key"])}</td>'
+                f'</tr>'
+            )
 
         body += f"""
           <!-- Precond note -->
@@ -2397,6 +2597,15 @@ class ReportHandler(Base):
             PC ({PRECOND['full_name']}; {PRECOND['standard']}) &mdash;
             {PRECOND['condition']} &mdash; {PRECOND['duration']}
           </div>
+
+          <!-- Tests Performed -->
+          <h6 class="text-muted mb-2" style="font-size:.8rem;letter-spacing:.05em;text-transform:uppercase">Tests Performed</h6>
+          <table class="table table-sm table-bordered mb-4">
+            <thead class="tbl-header">
+              <tr><th>Test</th><th>Condition</th><th>Duration</th></tr>
+            </thead>
+            <tbody>{tp_rows}</tbody>
+          </table>
 
           {correction_banner}
 
@@ -2415,10 +2624,11 @@ class ReportHandler(Base):
 
           {stat_section}
 
-          <!-- Sample Records Tables (TTV only) -->"""
+          <!-- Sample Records Tables (TTV and Die) -->"""
 
         samples = r.get("samples", {})
-        if r['part_type'] == 'ttv' and samples:
+        _rpt_is_ttv = r['part_type'] == 'ttv'
+        if r['part_type'] in ('ttv', 'die') and samples:
             for key in samples:
                 test_samples = samples[key]
                 if not test_samples:
@@ -2433,6 +2643,10 @@ class ReportHandler(Base):
                 if not test_name:
                     continue
 
+                _extra_th = """
+                <th style="min-width:80px">Thermal</th>
+                <th style="min-width:80px">Func</th>""" if _rpt_is_ttv else ""
+
                 body += f"""
           <h6 class="text-muted mt-4 mb-2" style="font-size:.8rem;letter-spacing:.05em;text-transform:uppercase">{test_name} — Sample Records</h6>
           <table class="table table-sm table-bordered mb-3">
@@ -2442,9 +2656,7 @@ class ReportHandler(Base):
                 <th style="min-width:120px">CSAM Before PC</th>
                 <th style="min-width:120px">CSAM After PC</th>
                 <th style="min-width:120px">CSAM After Test</th>
-                <th style="min-width:100px">CSAM Status</th>
-                <th style="min-width:80px">Thermal</th>
-                <th style="min-width:80px">Func</th>
+                <th style="min-width:100px">CSAM Status</th>{_extra_th}
                 <th style="min-width:80px">Overall</th>
               </tr>
             </thead>
@@ -2459,7 +2671,6 @@ class ReportHandler(Base):
                     csam_badge = sample["csam_badge"]
                     thermal = sample["thermal"]
                     func = sample["func"]
-                    failed_rtds = sample["failed_rtds"]
 
                     # Determine overall status
                     if csam_status == "Rejected — pre-PC < 95%":
@@ -2468,12 +2679,24 @@ class ReportHandler(Base):
                         show_dash = True
                     else:
                         show_dash = False
-                        if csam_status == "Pass" and thermal == "pass" and func == "pass":
-                            overall = "Pass"
-                            overall_badge = "success"
+                        if _rpt_is_ttv:
+                            passed = csam_status == "Pass" and thermal == "pass" and func == "pass"
                         else:
-                            overall = "Fail"
-                            overall_badge = "danger"
+                            passed = csam_status == "Pass"
+                        overall = "Pass" if passed else "Fail"
+                        overall_badge = "success" if passed else "danger"
+
+                    # RTD failure note (TTV thermal fail only)
+                    _failed_rtds = sample.get("failed_rtds", [])
+                    if _rpt_is_ttv and not show_dash and thermal == "fail" and _failed_rtds:
+                        _rtd_note = (f' <small class="text-muted" style="font-size:.8em;white-space:nowrap">'
+                                     f'{len(_failed_rtds)}/16 RTD</small>')
+                    else:
+                        _rtd_note = ""
+
+                    _extra_td = f"""
+                <td class="text-muted small">{"—" if show_dash else thermal.upper()}</td>
+                <td class="text-muted small">{"—" if show_dash else func.upper()}</td>""" if _rpt_is_ttv else ""
 
                     body += f"""
               <tr>
@@ -2481,10 +2704,8 @@ class ReportHandler(Base):
                 <td class="text-muted small">{f"{csam_bpc:.1f}%" if csam_bpc is not None else "—"}</td>
                 <td class="text-muted small">{f"{csam_apc:.1f}%" if csam_apc is not None else "—"}</td>
                 <td class="text-muted small">{f"{csam_atst:.1f}%" if csam_atst is not None else "—"}</td>
-                <td><span class="badge bg-{csam_badge}">{csam_status}</span></td>
-                <td class="text-muted small">{"—" if show_dash else thermal.upper()}</td>
-                <td class="text-muted small">{"—" if show_dash else func.upper()}</td>
-                <td><span class="badge bg-{overall_badge}">{overall.upper()}</span></td>
+                <td><span class="badge bg-{csam_badge}">{csam_status}</span></td>{_extra_td}
+                <td style="white-space:nowrap"><span class="badge bg-{overall_badge}">{overall.upper()}</span>{_rtd_note}</td>
               </tr>"""
 
                 body += f"""
@@ -2683,11 +2904,7 @@ def _make_pdf(r: dict) -> bytes:
     else:
         meta_rows.append([
             Paragraph("Part Number",  meta_label), Paragraph(pd.get("part_number","—"), meta_val),
-            Paragraph("Tech Node",    meta_label), Paragraph(pd.get("part_tech","—"),   meta_val),
-        ])
-        meta_rows.append([
             Paragraph("Package",      meta_label), Paragraph(pd.get("part_package","—"), meta_val),
-            Paragraph("",             meta_label), Paragraph("",                          meta_val),
         ])
     meta_tbl = Table(meta_rows, colWidths=[2.5*cm, 6*cm, 2.5*cm, 6*cm])
     meta_tbl.setStyle(TableStyle([
@@ -2716,6 +2933,48 @@ def _make_pdf(r: dict) -> bytes:
         ("BOTTOMPADDING",(0,0),(-1,-1), 8),
     ]))
     story.append(precond_tbl)
+    story.append(Spacer(1, 0.4*cm))
+
+    # ── 3b. Tests Performed ───────────────────────────────────────────────────
+    _tc = r.get("test_conditions", {})
+    def _pdf_cond_label(key: str) -> str:
+        ckey = _tc.get(key, "")
+        opts = _TEST_CONDITION_OPTIONS.get(key, [])
+        lbl  = next((lb for k, lb in opts if k == ckey), ckey)
+        return lbl or "—"
+    def _pdf_dur_label(key: str) -> str:
+        return TESTS.get(key, {}).get("duration", "—")
+
+    tp_hdr = [
+        Paragraph("<b>Test</b>",      S("TPH", fontSize=7.5, textColor=colors.white)),
+        Paragraph("<b>Condition</b>", S("TPH", fontSize=7.5, textColor=colors.white)),
+        Paragraph("<b>Duration</b>",  S("TPH", fontSize=7.5, textColor=colors.white)),
+    ]
+    tp_data = [tp_hdr]
+    for e in r["entries"]:
+        key = e["key"]
+        tp_data.append([
+            Paragraph(e["test"]["name"],      S("TPD", fontSize=7.5)),
+            Paragraph(_pdf_cond_label(key),   S("TPD", fontSize=7)),
+            Paragraph(_pdf_dur_label(key),    S("TPD", fontSize=7)),
+        ])
+    tp_tbl = Table(tp_data, colWidths=[4*cm, 8*cm, 5.5*cm])
+    tp_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  _NAVY),
+        ("BACKGROUND",    (0, 1), (-1,-1),  colors.white),
+        ("ROWBACKGROUNDS",(0, 1), (-1,-1),  [colors.white, colors.HexColor("#f8f9fa")]),
+        ("TOPPADDING",    (0, 0), (-1,-1),  5),
+        ("BOTTOMPADDING", (0, 0), (-1,-1),  5),
+        ("LEFTPADDING",   (0, 0), (-1,-1),  6),
+        ("RIGHTPADDING",  (0, 0), (-1,-1),  6),
+        ("GRID",          (0, 0), (-1,-1),  0.25, colors.HexColor("#dee2e6")),
+        ("VALIGN",        (0, 0), (-1,-1),  "TOP"),
+    ]))
+    story.append(Paragraph(
+        "Tests Performed",
+        S("TPSEC", fontSize=9, fontName="Helvetica-Bold", textColor=_NAVY, spaceAfter=4)
+    ))
+    story.append(tp_tbl)
     story.append(Spacer(1, 0.5*cm))
 
     # ── 4. Summary counts ─────────────────────────────────────────────────────
@@ -2790,7 +3049,7 @@ def _make_pdf(r: dict) -> bytes:
     sum_tbl.setStyle(TableStyle(row_style_cmds))
     story.append(sum_tbl)
 
-    # ── 6. Statistical details ────────────────────────────────────────────────
+    # ── 6. Statistical details (only when show_stats=True) ───────────────────
     _pdf_ltpd = r.get("qual_ltpd", 5.0)
     _pdf_conf = r.get("qual_confidence", 0.90)
     _pdf_rreq = r.get("qual_r_req", 0.95)
@@ -2798,7 +3057,7 @@ def _make_pdf(r: dict) -> bytes:
     _pdf_rreq_lbl = f'{_pdf_rreq*100:.0f}%'
     _pdf_ltpd_lbl = f'{_pdf_ltpd:g}%'
     stat_entries = [e for e in r["entries"] if e.get("r_demo") is not None]
-    if stat_entries:
+    if stat_entries and r.get("show_stats", True):
         story.append(Spacer(1, 0.5*cm))
         story.append(Paragraph(
             f"Statistical Details  ({_pdf_conf_lbl} confidence level, {_pdf_rreq_lbl} reliability target — LTPD {_pdf_ltpd_lbl})", section_h))
@@ -2817,9 +3076,10 @@ def _make_pdf(r: dict) -> bytes:
             ("FONTSIZE",      (0,1), (-1,-1), 9),
         ]
         for i, e in enumerate(stat_entries, start=1):
-            ok  = e["stat_pass"]
+            ok  = e.get("effective_pass", e.get("stat_pass"))
             bg  = _PASS_C if ok else _FAIL_C
-            res = "PASS" if ok else "FAIL"
+            _is_ov = e.get("pass_override", "auto") != "auto"
+            res = ("PASS*" if _is_ov else "PASS") if ok else ("FAIL*" if _is_ov else "FAIL")
             s_data.append([
                 Paragraph(e["test"]["name"],          body_s),
                 Paragraph(str(e["n"]),                body_s),
@@ -2850,17 +3110,23 @@ def _make_pdf(r: dict) -> bytes:
         for entry, slist in tests_with_samples:
             story.append(Paragraph(entry["test"]["name"], sub_h))
 
+            _pdf_is_ttv = r.get("part_type") == "ttv"
             # Table header
-            sr_data = [[
+            _sr_hdr = [
                 Paragraph("Sample ID",          sr_th),
                 Paragraph("CSAM Before PC (%)", sr_th),
                 Paragraph("CSAM After PC (%)",  sr_th),
                 Paragraph("CSAM After Test (%)",sr_th),
                 Paragraph("CSAM Status",        sr_th),
-                Paragraph("Thermal",            sr_th),
-                Paragraph("Failed Sensors",     sr_th),
-                Paragraph("Func.",              sr_th),
-            ]]
+            ]
+            if _pdf_is_ttv:
+                _sr_hdr += [
+                    Paragraph("Thermal",        sr_th),
+                    Paragraph("Failed Sensors", sr_th),
+                    Paragraph("Func.",          sr_th),
+                    Paragraph("Overall",        sr_th),
+                ]
+            sr_data = [_sr_hdr]
             sr_cmds = [
                 ("BACKGROUND",    (0,0), (-1,0), _NAVY),
                 ("GRID",          (0,0), (-1,-1), 0.4, colors.HexColor("#dee2e6")),
@@ -2876,32 +3142,43 @@ def _make_pdf(r: dict) -> bytes:
                 def _tf(v):
                     return v.upper() if v else "—"
                 csam_ok = s.get("csam_status","") == "Pass"
-                therm_ok = s.get("thermal","") == "pass"
-                func_ok  = s.get("func","") == "pass"
-                rtds = ", ".join(s.get("failed_rtds", [])) or "None"
 
-                sr_data.append([
+                _row = [
                     Paragraph(s["id"],                         sr_td),
                     Paragraph(_pct(s.get("csam_bpc")),         sr_td),
                     Paragraph(_pct(s.get("csam_apc")),         sr_td),
                     Paragraph(_pct(s.get("csam_atst")),        sr_td),
                     Paragraph(s.get("csam_status", "—"),       sr_td),
-                    Paragraph(_tf(s.get("thermal")),           sr_td),
-                    Paragraph(rtds,                            sr_sm),
-                    Paragraph(_tf(s.get("func")),              sr_td),
-                ])
-                csam_bg = _PASS_C if csam_ok else _FAIL_C
-                therm_bg = _PASS_C if therm_ok else _FAIL_C
-                func_bg  = _PASS_C if func_ok  else _FAIL_C
-                sr_cmds += [
-                    ("BACKGROUND", (4, ri), (4, ri), csam_bg),
-                    ("BACKGROUND", (5, ri), (5, ri), therm_bg),
-                    ("BACKGROUND", (7, ri), (7, ri), func_bg),
                 ]
+                if _pdf_is_ttv:
+                    therm_ok = s.get("thermal","") == "pass"
+                    func_ok  = s.get("func","") == "pass"
+                    _failed_rtds_pdf = s.get("failed_rtds", [])
+                    rtds = ", ".join(_failed_rtds_pdf) or "None"
+                    _overall_ok = csam_ok and therm_ok and func_ok
+                    if not therm_ok and _failed_rtds_pdf:
+                        _overall_txt = f"FAIL  {len(_failed_rtds_pdf)}/16 RTD"
+                    else:
+                        _overall_txt = "PASS" if _overall_ok else "FAIL"
+                    _row += [
+                        Paragraph(_tf(s.get("thermal")), sr_td),
+                        Paragraph(rtds,                  sr_sm),
+                        Paragraph(_tf(s.get("func")),    sr_td),
+                        Paragraph(_overall_txt,          sr_td),
+                    ]
+                    sr_cmds += [
+                        ("BACKGROUND", (5, ri), (5, ri), _PASS_C if therm_ok   else _FAIL_C),
+                        ("BACKGROUND", (7, ri), (7, ri), _PASS_C if func_ok    else _FAIL_C),
+                        ("BACKGROUND", (8, ri), (8, ri), _PASS_C if _overall_ok else _FAIL_C),
+                    ]
+                sr_data.append(_row)
+                sr_cmds.append(("BACKGROUND", (4, ri), (4, ri), _PASS_C if csam_ok else _FAIL_C))
 
-            sr_tbl = Table(sr_data,
-                           colWidths=[2.2*cm, 2.1*cm, 2.1*cm, 2.2*cm,
-                                      3.2*cm, 1.6*cm, 1.8*cm, 1.6*cm])
+            if _pdf_is_ttv:
+                _sr_widths = [2.0*cm, 1.9*cm, 1.9*cm, 1.9*cm, 2.8*cm, 1.4*cm, 1.6*cm, 1.4*cm, 2.1*cm]
+            else:
+                _sr_widths = [2.5*cm, 2.8*cm, 2.8*cm, 2.8*cm, 6.9*cm]
+            sr_tbl = Table(sr_data, colWidths=_sr_widths)
             sr_tbl.setStyle(TableStyle(sr_cmds))
             story.append(sr_tbl)
             story.append(Spacer(1, 0.4*cm))
@@ -3104,7 +3381,7 @@ class ProjectListHandler(Base):
           <h4 class="mb-0" style="font-weight:300">Projects</h4>
         </div>
         {table}
-        <div class="card mt-4 shadow-sm">
+        <div class="card mt-4 shadow-sm" data-admin-gate="show" style="display:none">
           <div class="card-df"><h6 class="mb-0">New Project</h6></div>
           <div class="card-body p-4">
             <form method="post" action="/projects/new">
@@ -3209,7 +3486,8 @@ class ProjectDetailHandler(Base):
             <div class="card shadow-sm mb-4">
               <div class="card-df d-flex align-items-center justify-content-between">
                 <h6 class="mb-0">Project Details</h6>
-                <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('edit-form').classList.toggle('d-none')">
+                <button class="btn btn-sm btn-outline-secondary" data-admin-gate="show" style="display:none"
+                        onclick="document.getElementById('edit-form').classList.toggle('d-none')">
                   <i class="bi bi-pencil me-1"></i>Edit
                 </button>
               </div>
@@ -3217,6 +3495,7 @@ class ProjectDetailHandler(Base):
                 <!-- Read-only view -->
                 <div id="view-details">
                   <div class="row g-3" style="font-size:.87rem">
+                    <div class="col-12"><span class="text-muted d-block">Project Name</span><strong>{p['name']}</strong></div>
                     <div class="col-sm-4"><span class="text-muted d-block">Device / Part</span><strong>{meta_device or '—'}</strong></div>
                     <div class="col-sm-4"><span class="text-muted d-block">Package</span><strong>{meta_pkg or '—'}</strong></div>
                     <div class="col-sm-4"><span class="text-muted d-block">Bond Type</span><strong>{meta_bond or '—'}</strong></div>
@@ -3230,6 +3509,10 @@ class ProjectDetailHandler(Base):
                 <!-- Edit form (hidden by default) -->
                 <form id="edit-form" class="d-none" method="post" action="/projects/{pid}/meta">
                   <div class="row g-3">
+                    <div class="col-12">
+                      <label class="form-label">Project Name <span class="text-danger">*</span></label>
+                      <input type="text" class="form-control" name="project_name" value="{p['name']}" required>
+                    </div>
                     <div class="col-md-4">
                       <label class="form-label">Device / Part</label>
                       <input type="text" class="form-control" name="device_name" value="{meta_device}">
@@ -3321,8 +3604,12 @@ class ProjectMetaHandler(Base):
             lot_id      = self.get_argument("lot_id",      ""),
             notes       = self.get_argument("notes",       ""),
         )
-        status = self.get_argument("status", p["status"])
-        _db.update_project(pid, status=status)
+        status       = self.get_argument("status", p["status"])
+        new_name     = self.get_argument("project_name", "").strip()
+        update_kwargs = {"status": status}
+        if new_name:
+            update_kwargs["name"] = new_name
+        _db.update_project(pid, **update_kwargs)
         self.redirect(f"/projects/{pid}")
 
 # ── Project-scoped: Sample Size ───────────────────────────────────────────────
@@ -3344,7 +3631,25 @@ class ProjectSampleSizeHandler(Base):
         p = self._get_project_or_404(pid)
         if not p: return
         action = self.get_argument("action", "planner")
-        if action == "per_test":
+        if action == "save_prescreen":
+            import json as _jps
+            try:
+                entries = _jps.loads(self.get_argument("prescreen_json", "[]"))
+            except Exception:
+                entries = []
+            _db.save_nonjec_prescreen(int(pid), entries)
+            self._render(p)
+            return
+        elif action == "save_postqual":
+            import json as _jpq
+            try:
+                entries = _jpq.loads(self.get_argument("postqual_json", "[]"))
+            except Exception:
+                entries = []
+            _db.save_nonjec_postqual(int(pid), entries)
+            self._render(p)
+            return
+        elif action == "per_test":
             # Save per-test sample counts and selected conditions
             tests = applicable_tests(p["part_type"])
             existing = _db.get_samples(int(pid))
@@ -3379,8 +3684,10 @@ class ProjectSampleSizeHandler(Base):
     def _render(self, p, k=0, ltpd=5.0, confidence=0.90, n_jesd47=None, n_exact=None, error=None):
         pid   = p["id"]
         tests = applicable_tests(p["part_type"])
-        saved_counts = _db.get_samples(int(pid))
-        saved_conds  = _db.get_test_conditions(int(pid))
+        saved_counts      = _db.get_samples(int(pid))
+        saved_conds       = _db.get_test_conditions(int(pid))
+        prescreen_entries = _db.get_nonjec_prescreen(int(pid))
+        postqual_entries  = _db.get_nonjec_postqual(int(pid))
 
         # ── Table A ────────────────────────────────────────────────────────
         ltpd_cols = TABLE_A_LTPD
@@ -3464,7 +3771,7 @@ class ProjectSampleSizeHandler(Base):
                     opt_html += f'<option value="{ckey}"{sel}>{clabel}</option>'
                 cond_cell = (
                     f'<td style="padding:5px 8px">'
-                    f'<select name="cond_{key}" class="form-select form-select-sm" style="font-size:.72rem;min-width:200px">'
+                    f'<select name="cond_{key}" class="form-select form-select-sm" style="font-size:.72rem;width:100%">'
                     f'{opt_html}</select>'
                     f'</td>'
                 )
@@ -3491,7 +3798,8 @@ class ProjectSampleSizeHandler(Base):
           <div class="card-body p-0">
             <form method="post" action="/projects/{pid}/sample-size">
               <input type="hidden" name="action" value="per_test">
-              <table class="table table-sm mb-0">
+              <div style="overflow-x:auto">
+              <table class="table table-sm mb-0" style="min-width:500px">
                 <thead class="tbl-header">
                   <tr>
                     <th style="padding:5px 8px;font-size:.72rem">Test</th>
@@ -3502,7 +3810,8 @@ class ProjectSampleSizeHandler(Base):
                 </thead>
                 <tbody>{alloc_rows}</tbody>
               </table>
-              <div class="p-2 border-top">
+              </div>
+              <div class="p-2 border-top" data-admin-gate="show" style="display:none">
                 <button type="submit" class="btn btn-sm"
                   style="background:var(--df-accent);color:#fff;border:none;font-size:.78rem">
                   Save Sample Counts
@@ -3511,6 +3820,260 @@ class ProjectSampleSizeHandler(Base):
             </form>
           </div>
         </div>"""
+
+        # ── Pre-screen Destructive Tests panel ────────────────────────────
+        def _ps_type_opts(sel="pull_test"):
+            return "".join(
+                f'<option value="{k}"{" selected" if k == sel else ""}>{v["label"]}</option>'
+                for k, v in _NONJEC_TYPES.items()
+            )
+        def _ps_row(entry):
+            ttype = entry.get("test_type", "pull_test")
+            cname = entry.get("custom_name", "")
+            samp  = entry.get("sample_count", 0)
+            is_o  = ttype == "other"
+            dv    = entry.get("duration_weeks") or _NONJEC_TYPES.get(ttype, {}).get("default_dur", 1) or 1
+            nd_name = "" if is_o else " disabled"  # custom name only editable for "other"
+            return (
+                f'<tr>'
+                f'<td style="padding:4px 6px"><select class="form-select form-select-sm ps-type" style="width:110px" onchange="onPsTypeChange(this)">{_ps_type_opts(ttype)}</select></td>'
+                f'<td style="padding:4px 6px"><input type="text" class="form-control form-control-sm ps-name" value="{cname}" placeholder="Custom name" style="width:130px"{nd_name}></td>'
+                f'<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm ps-dur" value="{dv}" min="1" style="width:60px"></td>'
+                f'<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm ps-n" value="{samp}" min="0" style="width:72px" placeholder="0"></td>'
+                f'<td style="padding:4px 6px"><button type="button" class="btn btn-sm" style="padding:2px 7px;font-size:.72rem;border:1px solid #fca5a5;color:#dc2626;background:#fff" onclick="this.closest(\'tr\').remove()">&#x2715;</button></td>'
+                f'</tr>'
+            )
+        ps_rows = "".join(_ps_row(e) for e in prescreen_entries)
+
+        prescreen_panel = f"""
+        <div class="card mt-3" style="border:1px solid var(--df-border)">
+          <div class="card-df d-flex justify-content-between align-items-center">
+            <h6 class="mb-0" style="font-size:.82rem">Pre-screen Destructive Tests</h6>
+            <span style="font-size:.7rem;color:rgba(255,255,255,.6)">Samples not entering JEDEC tests</span>
+          </div>
+          <div class="card-body p-0">
+            <form method="post" action="/projects/{pid}/sample-size" id="prescreenForm" onsubmit="collectPrescreenData()">
+              <input type="hidden" name="action" value="save_prescreen">
+              <input type="hidden" name="prescreen_json" id="prescreenJson">
+              <div style="overflow-x:auto">
+                <table class="table table-sm mb-0" style="min-width:520px">
+                  <thead class="tbl-header">
+                    <tr>
+                      <th style="padding:5px 8px;font-size:.72rem">Test Type</th>
+                      <th style="padding:5px 8px;font-size:.72rem">Custom Name</th>
+                      <th style="padding:5px 8px;font-size:.72rem">Wks</th>
+                      <th style="padding:5px 8px;font-size:.72rem">n</th>
+                      <th style="padding:5px 8px;font-size:.72rem"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="prescreenBody">{ps_rows if ps_rows else '<tr id="ps-empty"><td colspan="5" class="text-center text-muted py-3" style="font-size:.8rem">No pre-screen tests added.</td></tr>'}</tbody>
+                </table>
+              </div>
+              <div class="p-2 border-top d-flex gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-admin-gate="show" style="display:none;font-size:.78rem" onclick="addPrescreenRow()">
+                  <i class="bi bi-plus-lg me-1"></i>Add Row
+                </button>
+                <button type="submit" class="btn btn-sm" data-admin-gate="show" style="display:none;background:var(--df-accent);color:#fff;border:none;font-size:.78rem">
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>"""
+
+        # ── Post-Qual Destructive Tests panel ─────────────────────────────
+        _jedec_test_opts_base = '<option value="">— select JEDEC test —</option>' + "".join(
+            f'<option value="{key}">{t["name"]}</option>' for key, t in tests.items()
+        )
+        def _pq_type_opts(sel="pull_test"):
+            return "".join(
+                f'<option value="{k}"{" selected" if k == sel else ""}>{v["label"]}</option>'
+                for k, v in _NONJEC_TYPES.items()
+            )
+        def _pq_parent_opts(sel=""):
+            return '<option value="">— select JEDEC test —</option>' + "".join(
+                f'<option value="{key}"{" selected" if key == sel else ""}>{t["name"]}</option>'
+                for key, t in tests.items()
+            )
+        def _pq_row(entry):
+            ttype  = entry.get("test_type", "pull_test")
+            cname  = entry.get("custom_name", "")
+            parent = entry.get("parent_stress_test_key", "")
+            samp   = entry.get("sample_count", 0)
+            is_o   = ttype == "other"
+            dv     = entry.get("duration_weeks") or _NONJEC_TYPES.get(ttype, {}).get("default_dur", 1) or 1
+            nd_name = "" if is_o else " disabled"  # custom name only editable for "other"
+            return (
+                f'<tr>'
+                f'<td style="padding:4px 6px"><select class="form-select form-select-sm pq-type" style="width:110px" onchange="onPqTypeChange(this)">{_pq_type_opts(ttype)}</select></td>'
+                f'<td style="padding:4px 6px"><input type="text" class="form-control form-control-sm pq-name" value="{cname}" placeholder="Custom name" style="width:120px"{nd_name}></td>'
+                f'<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm pq-dur" value="{dv}" min="1" style="width:55px"></td>'
+                f'<td style="padding:4px 6px"><select class="form-select form-select-sm pq-parent" style="min-width:155px">{_pq_parent_opts(parent)}</select></td>'
+                f'<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm pq-n" value="{samp}" min="0" style="width:68px" placeholder="0"></td>'
+                f'<td style="padding:4px 6px"><button type="button" class="btn btn-sm" style="padding:2px 7px;font-size:.72rem;border:1px solid #fca5a5;color:#dc2626;background:#fff" onclick="this.closest(\'tr\').remove()">&#x2715;</button></td>'
+                f'</tr>'
+            )
+        pq_rows = "".join(_pq_row(e) for e in postqual_entries)
+
+        postqual_panel = f"""
+        <div class="card mt-3" style="border:1px solid var(--df-border)">
+          <div class="card-df d-flex justify-content-between align-items-center">
+            <h6 class="mb-0" style="font-size:.82rem">Post-Qual Destructive Tests</h6>
+            <span style="font-size:.7rem;color:rgba(255,255,255,.6)">Samples drawn from post-JEDEC pool</span>
+          </div>
+          <div class="card-body p-0">
+            <form method="post" action="/projects/{pid}/sample-size" id="postqualForm" onsubmit="collectPostqualData()">
+              <input type="hidden" name="action" value="save_postqual">
+              <input type="hidden" name="postqual_json" id="postqualJson">
+              <div style="overflow-x:auto">
+                <table class="table table-sm mb-0" style="min-width:620px">
+                  <thead class="tbl-header">
+                    <tr>
+                      <th style="padding:5px 8px;font-size:.72rem">Test Type</th>
+                      <th style="padding:5px 8px;font-size:.72rem">Custom Name</th>
+                      <th style="padding:5px 8px;font-size:.72rem">Wks</th>
+                      <th style="padding:5px 8px;font-size:.72rem">Parent JEDEC Test</th>
+                      <th style="padding:5px 8px;font-size:.72rem">n / set</th>
+                      <th style="padding:5px 8px;font-size:.72rem"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="postqualBody">{pq_rows if pq_rows else '<tr id="pq-empty"><td colspan="6" class="text-center text-muted py-3" style="font-size:.8rem">No post-qual tests added.</td></tr>'}</tbody>
+                </table>
+              </div>
+              <div class="p-2 border-top d-flex gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-admin-gate="show" style="display:none;font-size:.78rem" onclick="addPostqualRow()">
+                  <i class="bi bi-plus-lg me-1"></i>Add Row
+                </button>
+                <button type="submit" class="btn btn-sm" data-admin-gate="show" style="display:none;background:var(--df-accent);color:#fff;border:none;font-size:.78rem">
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>"""
+
+        # JS for both sections — embedded in the page body
+        _nonjec_durs_js = '{' + ", ".join(
+            f'"{k}": {v["default_dur"] if v["default_dur"] is not None else "null"}'
+            for k, v in _NONJEC_TYPES.items()
+        ) + '}'
+        _jedec_opts_js = _jedec_test_opts_base.replace("'", "\\'")
+
+        nonjec_script = f"""<script>
+        var _NONJEC_DURS = {_nonjec_durs_js};
+        var _JEDEC_TEST_OPTS = '{_jedec_opts_js}';
+
+        function onPsTypeChange(sel) {{
+          var tr = sel.closest('tr');
+          var nameEl = tr.querySelector('.ps-name');
+          var durEl  = tr.querySelector('.ps-dur');
+          var isOther = (sel.value === 'other');
+          nameEl.disabled = !isOther;
+          // Duration is always editable; auto-populate default when type changes
+          if (!isOther) {{
+            nameEl.value = '';
+            var d = _NONJEC_DURS[sel.value];
+            if (d !== null && d !== undefined) durEl.value = d;
+          }}
+        }}
+        function onPqTypeChange(sel) {{
+          var tr = sel.closest('tr');
+          var nameEl = tr.querySelector('.pq-name');
+          var durEl  = tr.querySelector('.pq-dur');
+          var isOther = (sel.value === 'other');
+          nameEl.disabled = !isOther;
+          // Duration is always editable; auto-populate default when type changes
+          if (!isOther) {{
+            nameEl.value = '';
+            var d = _NONJEC_DURS[sel.value];
+            if (d !== null && d !== undefined) durEl.value = d;
+          }}
+        }}
+
+        function removeNonjecRow(btn) {{ btn.closest('tr').remove(); }}
+
+        var _DEL_BTN = '<button type="button" class="btn btn-sm" style="padding:2px 7px;font-size:.72rem;border:1px solid #fca5a5;color:#dc2626;background:#fff" onclick="removeNonjecRow(this)">&#x2715;</button>';
+
+        function _buildTypeOpts(sel) {{
+          var types = {{'pull_test':'Pull Test','xsem':'X-SEM','other':'Other'}};
+          return Object.entries(types).map(([k,v]) =>
+            '<option value="' + k + '"' + (k===sel?' selected':'') + '>' + v + '</option>'
+          ).join('');
+        }}
+
+        function addPrescreenRow() {{
+          var empty = document.getElementById('ps-empty');
+          if (empty) empty.remove();
+          var tbody = document.getElementById('prescreenBody');
+          var tr = document.createElement('tr');
+          var defDur = _NONJEC_DURS['pull_test'] || 1;
+          tr.innerHTML = (
+            '<td style="padding:4px 6px"><select class="form-select form-select-sm ps-type" style="width:110px" onchange="onPsTypeChange(this)">' + _buildTypeOpts('pull_test') + '</select></td>'
+            + '<td style="padding:4px 6px"><input type="text" class="form-control form-control-sm ps-name" placeholder="Custom name" style="width:130px" disabled></td>'
+            + '<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm ps-dur" value="' + defDur + '" min="1" style="width:60px"></td>'
+            + '<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm ps-n" value="0" min="0" style="width:72px"></td>'
+            + '<td style="padding:4px 6px">' + _DEL_BTN + '</td>'
+          );
+          tbody.appendChild(tr);
+        }}
+
+        function addPostqualRow() {{
+          var empty = document.getElementById('pq-empty');
+          if (empty) empty.remove();
+          var tbody = document.getElementById('postqualBody');
+          var tr = document.createElement('tr');
+          var defDur = _NONJEC_DURS['pull_test'] || 1;
+          tr.innerHTML = (
+            '<td style="padding:4px 6px"><select class="form-select form-select-sm pq-type" style="width:110px" onchange="onPqTypeChange(this)">' + _buildTypeOpts('pull_test') + '</select></td>'
+            + '<td style="padding:4px 6px"><input type="text" class="form-control form-control-sm pq-name" placeholder="Custom name" style="width:120px" disabled></td>'
+            + '<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm pq-dur" value="' + defDur + '" min="1" style="width:55px"></td>'
+            + '<td style="padding:4px 6px"><select class="form-select form-select-sm pq-parent" style="min-width:155px">' + _JEDEC_TEST_OPTS + '</select></td>'
+            + '<td style="padding:4px 6px"><input type="number" class="form-control form-control-sm pq-n" value="0" min="0" style="width:68px"></td>'
+            + '<td style="padding:4px 6px">' + _DEL_BTN + '</td>'
+          );
+          tbody.appendChild(tr);
+        }}
+
+        function collectPrescreenData() {{
+          var rows = document.querySelectorAll('#prescreenBody tr');
+          var data = [];
+          rows.forEach(function(tr) {{
+            var typeEl = tr.querySelector('.ps-type');
+            var nameEl = tr.querySelector('.ps-name');
+            var durEl  = tr.querySelector('.ps-dur');
+            var nEl    = tr.querySelector('.ps-n');
+            if (!typeEl) return;
+            data.push({{
+              test_type: typeEl.value,
+              custom_name: nameEl ? nameEl.value : '',
+              duration_weeks: durEl ? (parseInt(durEl.value)||1) : 1,
+              sample_count: nEl ? (parseInt(nEl.value)||0) : 0
+            }});
+          }});
+          document.getElementById('prescreenJson').value = JSON.stringify(data);
+        }}
+
+        function collectPostqualData() {{
+          var rows = document.querySelectorAll('#postqualBody tr');
+          var data = [];
+          rows.forEach(function(tr) {{
+            var typeEl   = tr.querySelector('.pq-type');
+            var nameEl   = tr.querySelector('.pq-name');
+            var durEl    = tr.querySelector('.pq-dur');
+            var parentEl = tr.querySelector('.pq-parent');
+            var nEl      = tr.querySelector('.pq-n');
+            if (!typeEl) return;
+            data.push({{
+              test_type: typeEl.value,
+              custom_name: nameEl ? nameEl.value : '',
+              duration_weeks: durEl ? (parseInt(durEl.value)||1) : 1,
+              parent_stress_test_key: parentEl ? parentEl.value : '',
+              sample_count: nEl ? (parseInt(nEl.value)||0) : 0
+            }});
+          }});
+          document.getElementById('postqualJson').value = JSON.stringify(data);
+        }}
+        </script>"""
 
         body = f"""
         <h5 class="mb-3" style="font-weight:300">Sample Size Planner — {p['name']}</h5>
@@ -3568,7 +4131,16 @@ class ProjectSampleSizeHandler(Base):
           <div class="col-xl-4 col-lg-4">
             {per_test_panel}
           </div>
-        </div>"""
+        </div>
+        <div class="row g-3 mt-1">
+          <div class="col-lg-6">
+            {prescreen_panel}
+          </div>
+          <div class="col-lg-6">
+            {postqual_panel}
+          </div>
+        </div>
+        {nonjec_script}"""
         self.emit(body, f"Planner — {p['name']}", active="projects",
                   project=p, active_sub="sample-size")
 
@@ -3630,6 +4202,149 @@ class ProjectPassFailHandler(Base):
 
 # ── Project-scoped: Qual Report ───────────────────────────────────────────────
 
+# ── Non-JEDEC results section (injected into project Qual Report form) ────────
+
+def _build_nonjec_report_section(prescreen: list, postqual: list,
+                                  saved: dict) -> str:
+    """Return HTML for the Non-JEDEC Test Results card to embed in the report form.
+
+    prescreen / postqual: list of entry dicts from DB.
+    saved: dict keyed by (entry_id, source) from _db.get_nonjec_results().
+    """
+
+    def _entry_html(entry: dict, source: str) -> str:
+        eid      = entry["id"]
+        ttype    = entry.get("test_type", "pull_test")
+        name     = _nonjec_display_name(entry)
+        saved_r  = saved.get((eid, source), {})
+        comments = saved_r.get("comments", "")
+        pfx      = f"nonjec_{source}_{eid}"      # form field prefix
+
+        # ── Saved thumbnail helper ────────────────────────────────────────────
+        def _thumb(slot: int, label: str) -> str:
+            img_b64 = saved_r.get(f"img_{slot}", "")
+            preview = (f'<img src="{img_b64}" class="img-thumbnail mt-1"'
+                       f' style="max-height:80px;max-width:120px;object-fit:cover"'
+                       f' alt="{label}">') if img_b64 else ""
+            return (f'<div><label class="form-label mb-1" style="font-size:.78rem">'
+                    f'{label}</label>'
+                    f'<input type="file" class="form-control form-control-sm"'
+                    f' name="{pfx}_img{slot}" accept="image/*">'
+                    f'{preview}</div>')
+
+        if ttype == "pull_test":
+            saved_mpa = saved_r.get("pull_strength_mpa", "")
+            mpa_val   = f' value="{saved_mpa}"' if saved_mpa not in (None, "") else ""
+            img_block = f"""
+              <div class="row g-2 mb-2">
+                <div class="col-md-6">{_thumb(1, "Surface A")}</div>
+                <div class="col-md-6">{_thumb(2, "Surface B")}</div>
+              </div>"""
+            mpa_block = f"""
+              <div class="mb-2">
+                <label class="form-label mb-1" style="font-size:.78rem">Pull Strength (MPa)</label>
+                <div class="input-group input-group-sm" style="max-width:200px">
+                  <input type="number" class="form-control form-control-sm"
+                         name="{pfx}_mpa" step="0.01" min="0" placeholder="e.g. 42.5"{mpa_val}>
+                  <span class="input-group-text">MPa</span>
+                </div>
+              </div>"""
+        else:
+            # X-SEM or Other: up to 5 images
+            n_imgs = 5
+            img_cols = ""
+            for i in range(1, n_imgs + 1):
+                lbl = f"SEM Image {i}" if ttype == "xsem" else f"Image {i}"
+                img_cols += f'<div class="col-md-4 col-lg-2">{_thumb(i, lbl)}</div>'
+            img_block = f'<div class="row g-2 mb-2">{img_cols}</div>'
+            mpa_block = ""
+
+        comments_html = (
+            f'<div>'
+            f'<label class="form-label mb-1" style="font-size:.78rem">Comments <span class="text-muted">(optional)</span></label>'
+            f'<textarea class="form-control form-control-sm" name="{pfx}_comments"'
+            f' rows="2" placeholder="Optional notes…">{comments}</textarea>'
+            f'</div>'
+        )
+
+        return (
+            f'<div class="border rounded p-3 mb-3" style="background:#fafafa">'
+            f'<h6 class="mb-3" style="font-size:.88rem;font-weight:600">{name}</h6>'
+            f'{mpa_block}'
+            f'{img_block}'
+            f'{comments_html}'
+            f'</div>'
+        )
+
+    # ── Build groups ──────────────────────────────────────────────────────────
+    groups: list[tuple[str, list]] = []     # (group_label, list_of_(entry, source))
+
+    # Pre-stress group: all prescreen + orphan postqual (no parent)
+    pre_entries = [(e, "pre") for e in prescreen]
+    orphans     = [(e, "pq") for e in postqual if not e.get("parent_stress_test_key", "").strip()]
+    if pre_entries or orphans:
+        groups.append(("Pre-Stress Tests", pre_entries + orphans))
+
+    # Post-stress groups: one per parent stress key (in JEDEC test order)
+    _stress_order = ["uhast", "tc", "tshock", "mshock", "vib", "hts"]
+    pq_by_parent: dict[str, list] = {}
+    for e in postqual:
+        pk = e.get("parent_stress_test_key", "").strip()
+        if pk:
+            pq_by_parent.setdefault(pk, []).append(e)
+    for sk in _stress_order:
+        if sk in pq_by_parent:
+            abbrev = _STRESS_ABBREV.get(sk, sk.upper())
+            groups.append((f"Post-{abbrev} Tests",
+                           [(e, "pq") for e in pq_by_parent[sk]]))
+    # Any remaining keys not in stress_order
+    for sk, entries_list in pq_by_parent.items():
+        if sk not in _stress_order:
+            abbrev = _STRESS_ABBREV.get(sk, sk.upper())
+            groups.append((f"Post-{abbrev} Tests",
+                           [(e, "pq") for e in entries_list]))
+
+    if not groups:
+        return ""   # no non-JEDEC tests configured
+
+    group_html = ""
+    for label, items in groups:
+        if not items:
+            continue
+        entries_html = "".join(_entry_html(e, src) for e, src in items)
+        group_html += (
+            f'<h6 class="mb-3 mt-3" style="font-size:.82rem;text-transform:uppercase;'
+            f'letter-spacing:.04em;color:var(--df-mid)">{label}</h6>'
+            f'{entries_html}'
+        )
+
+    return (
+        f'<div class="card mb-4">'
+        f'<div class="card-df"><h6 class="mb-0">Non-JEDEC Test Results</h6></div>'
+        f'<div class="card-body p-4">'
+        f'{group_html}'
+        f'</div>'
+        f'</div>'
+    )
+
+# ── Helpers: parse uploaded image file → base64 data-URI ──────────────────────
+
+def _read_upload_b64(handler, field_name: str) -> str:
+    """Return base64 data-URI for an uploaded image field, or '' if absent."""
+    try:
+        files = handler.request.files.get(field_name)
+        if not files:
+            return ""
+        f = files[0]
+        if not f["body"]:
+            return ""
+        mime = f.get("content_type", "image/jpeg") or "image/jpeg"
+        b64  = base64.b64encode(f["body"]).decode()
+        return f"data:{mime};base64,{b64}"
+    except Exception:
+        return ""
+
+
 class ProjectReportHandler(ReportHandler):
     def _get_project_or_404(self, pid):
         p = _db.get_project(int(pid))
@@ -3648,6 +4363,8 @@ class ProjectReportHandler(ReportHandler):
         _qual = _db.get_sample_size(int(pid))
         self._qual_ltpd       = _qual.get("ltpd", 5.0)
         self._qual_confidence = _qual.get("confidence", 0.90)
+        # Inject saved test conditions so report includes Tests Performed section
+        self._test_conditions = _db.get_test_conditions(int(pid))
         # Make the form POST back to the project-scoped URL (not the standalone /report)
         self._form_action = f"/projects/{pid}/report"
         captured = {}
@@ -3658,6 +4375,14 @@ class ProjectReportHandler(ReportHandler):
         ReportHandler.get(self)
         self.emit = orig_emit
         body = captured.get("body", "")
+        # ── Inject Non-JEDEC Test Results section before the submit button ────
+        _prescreen  = _db.get_nonjec_prescreen(int(pid))
+        _postqual   = _db.get_nonjec_postqual(int(pid))
+        _nj_saved   = _db.get_nonjec_results(int(pid))
+        _nj_section = _build_nonjec_report_section(_prescreen, _postqual, _nj_saved)
+        _submit_marker = '<button type="submit" class="btn btn-primary btn-lg px-5">'
+        if _nj_section and _submit_marker in body:
+            body = body.replace(_submit_marker, _nj_section + _submit_marker, 1)
         self.emit(body, f"Qual Report — {p['name']}", active="projects",
                   project=p, active_sub="report")
 
@@ -3670,6 +4395,7 @@ class ProjectReportHandler(ReportHandler):
         _qual = _db.get_sample_size(int(pid))
         self._qual_ltpd       = _qual.get("ltpd", 5.0)
         self._qual_confidence = _qual.get("confidence", 0.90)
+        self._test_conditions = _db.get_test_conditions(int(pid))
         # Delegate to existing ReportHandler.post which builds report dict and stores in session
         captured = {}
         def _capture(body, title="", active="", project=None, active_sub=""):
@@ -3701,7 +4427,48 @@ class ProjectReportHandler(ReportHandler):
                                 _db.upsert_csam_image(
                                     int(pid), sample_id, test_key, stage, img_data
                                 )
+        # ── Save non-JEDEC test results ───────────────────────────────────────
+        _prescreen = _db.get_nonjec_prescreen(int(pid))
+        _postqual  = _db.get_nonjec_postqual(int(pid))
+        all_entries = (
+            [(e, "pre") for e in _prescreen] +
+            [(e, "pq")  for e in _postqual]
+        )
+        for entry, src in all_entries:
+            eid  = entry["id"]
+            pfx  = f"nonjec_{src}_{eid}"
+            ttype = entry.get("test_type", "pull_test")
+
+            # Pull strength (pull_test only)
+            mpa_raw = self.get_argument(f"{pfx}_mpa", "").strip()
+            try:    mpa_val = float(mpa_raw) if mpa_raw else None
+            except: mpa_val = None
+
+            # Comments
+            comments = self.get_argument(f"{pfx}_comments", "").strip()
+
+            # Images: 2 for pull_test, 5 for others
+            n_imgs = 2 if ttype == "pull_test" else 5
+            images = []
+            for i in range(1, n_imgs + 1):
+                img = _read_upload_b64(self, f"{pfx}_img{i}")
+                if not img:
+                    # Keep existing image if no new upload
+                    img = _db.get_nonjec_results(int(pid)).get((eid, src), {}).get(f"img_{i}", "")
+                images.append(img)
+
+            _db.save_nonjec_result(int(pid), eid, src,
+                                   pull_strength_mpa=mpa_val,
+                                   comments=comments,
+                                   images=images)
+
         body = captured.get("body", "")
+        # Re-inject non-JEDEC section with saved values so it re-renders correctly
+        _nj_saved   = _db.get_nonjec_results(int(pid))
+        _nj_section = _build_nonjec_report_section(_prescreen, _postqual, _nj_saved)
+        _submit_marker = '<button type="submit" class="btn btn-primary btn-lg px-5">'
+        if _nj_section and _submit_marker in body:
+            body = body.replace(_submit_marker, _nj_section + _submit_marker, 1)
         self.emit(body, f"Qual Report — {p['name']}", active="projects",
                   project=p, active_sub="report")
 
@@ -3885,17 +4652,51 @@ class ProjectCsamDeleteHandler(Base):
         self.redirect(f"/projects/{pid}/csam")
 
 
+# ── Non-JEDEC test type registry ──────────────────────────────────────────────
+_NONJEC_TYPES = {
+    "pull_test": {"label": "Pull Test", "default_dur": 1},
+    "xsem":      {"label": "X-SEM",     "default_dur": 1},
+    "other":     {"label": "Other",      "default_dur": None},  # duration required
+}
+
+# Abbreviated stress test names used for GANTT labels ("Post-TC Pull Test", etc.)
+_STRESS_ABBREV: dict[str, str] = {
+    "precond": "Precond",
+    "uhast":   "uHAST",
+    "tc":      "TC",
+    "tshock":  "T-Shock",
+    "mshock":  "M-Shock",
+    "vib":     "Vib",
+    "hts":     "HTS",
+}
+
+def _nonjec_display_name(entry: dict) -> str:
+    ttype = entry.get("test_type", "pull_test")
+    if ttype == "other":
+        return entry.get("custom_name", "").strip() or "Other Test"
+    return _NONJEC_TYPES.get(ttype, {}).get("label", ttype)
+
+def _nonjec_duration(entry: dict) -> int:
+    ttype = entry.get("test_type", "pull_test")
+    if ttype == "other":
+        return max(1, int(entry.get("duration_weeks", 1)))
+    return _NONJEC_TYPES.get(ttype, {}).get("default_dur", 1)
+
+
 # ── Dynamic JEDEC qualification task template ─────────────────────────────────
 # Durations are computed from sample counts stored in project_samples.
 # Tasks run sequentially; durations round up to whole weeks (min 1).
 
-def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
-    """Build the 21-step qual plan with durations derived from sample counts.
+def _compute_seeded_tasks(sample_counts: dict,
+                           prescreen: list | None = None,
+                           postqual:  list | None = None,
+                           part_type: str = "ttv") -> list[dict]:
+    """Build the qual plan with durations derived from sample counts.
 
-    Steps 1-6 run sequentially (preparation phase).
-    Steps 7-21 are stress+post pairs that all START at the same week (parallel),
-    but within each pair the post-test step follows its stress test sequentially.
+    For TTV: includes SCD prep steps and post-stress testing (functional/thermal).
+    For Die: skips TTV-specific prep and post-stress testing tasks (CSAM only).
     """
+    is_ttv = (part_type != "die")
     def n(key):
         v = sample_counts.get(key, 0)
         return max(1, int(v)) if v else 1
@@ -3909,14 +4710,13 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
         return max(1, math.ceil(days / 7))
 
     # ── Phase 1: sequential preparation steps ─────────────────────────────
+    result, sw = [], 1
     prep = [
         ("SCD Surface Prep",
             "Preparation", "", 2),
         ("SCD Bonding + CSAM",
             "Preparation", "", cw(total / 4)),   # 1 day per 4 samples
     ]
-
-    result, sw = [], 1
     for name, cat, key, dur in prep:
         result.append({"task_name": name, "category": cat, "test_key": key,
                         "start_week": sw, "duration": dur})
@@ -3936,6 +4736,38 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
         "duration":   2,
         "n_mode":     "total",
     })
+
+    # ── Non-JEDEC: Pre-screen tasks go right after Preconditioning ────────────
+    # Labeled "Pre-{test_name}", all start at the same week as Preconditioning.
+    # Post-qual entries with no parent are also treated as pre-screen.
+    def _append_nonjec_prelike(entry: dict) -> None:
+        base = _nonjec_display_name(entry)
+        result.append({
+            "task_name":  f"Pre-{base}",
+            "category":   "Non-JEDEC Test",
+            "test_key":   entry.get("test_type", "pull_test"),
+            "start_week": stress_start,
+            "duration":   _nonjec_duration(entry),
+            "n_mode":     "custom",
+            "n_custom":   int(entry.get("sample_count", 0)) or None,
+        })
+
+    for entry in (prescreen or []):
+        _append_nonjec_prelike(entry)
+
+    # Orphan post-qual entries (no parent stress selected) behave like pre-screen
+    orphan_postqual = [e for e in (postqual or [])
+                       if not e.get("parent_stress_test_key", "").strip()]
+    for entry in orphan_postqual:
+        _append_nonjec_prelike(entry)
+
+    # ── Build a lookup: stress_key → list of post-qual entries with that parent ─
+    parented_postqual: dict[str, list] = {}
+    for e in (postqual or []):
+        pk = e.get("parent_stress_test_key", "").strip()
+        if pk:
+            parented_postqual.setdefault(pk, []).append(e)
+
     pairs = [
         ("uHAST",    "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
         ("TC",       "tc",     6, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
@@ -3952,16 +4784,36 @@ def _compute_seeded_tasks(sample_counts: dict) -> list[dict]:
         stress_idx = len(result)          # remember position of this stress task
         result.append({"task_name": sname, "category": "Stress", "test_key": skey,
                         "start_week": other_stress_start, "duration": sdur, "n_mode": "test"})
-        post_sw = other_stress_start + sdur   # analysis starts week AFTER stress ends
+        post_sw = other_stress_start + sdur - 1  # analysis may begin on the last week of stress
+        last_analysis_end = post_sw                # tracks where the last child task ends
         if pcsam_name:
             result.append({"task_name": pcsam_name, "category": "Analysis", "test_key": tkey,
                             "start_week": post_sw, "duration": 1,
                             "n_mode": "test", "_parent_idx": stress_idx})
             post_sw += 1
-        if ptest_name:
+            last_analysis_end = post_sw
+        if ptest_name and is_ttv:
+            # Post-stress testing (functional/thermal) is TTV-specific; omit for Die
             result.append({"task_name": ptest_name, "category": "Analysis", "test_key": tkey,
                             "start_week": post_sw, "duration": ptest_dur,
                             "n_mode": "test", "_parent_idx": stress_idx})
+            last_analysis_end = post_sw + ptest_dur
+
+        # ── Non-JEDEC: Post-qual tasks parented to this stress test ───────────
+        # Inserted immediately after the last analysis row; start after it ends.
+        abbrev = _STRESS_ABBREV.get(skey, skey.upper())
+        for entry in parented_postqual.get(skey, []):
+            base = _nonjec_display_name(entry)
+            result.append({
+                "task_name":  f"Post-{abbrev} {base}",
+                "category":   "Non-JEDEC Test",
+                "test_key":   entry.get("test_type", "pull_test"),
+                "start_week": last_analysis_end,
+                "duration":   _nonjec_duration(entry),
+                "n_mode":     "custom",
+                "n_custom":   int(entry.get("sample_count", 0)) or None,
+                "_parent_idx": stress_idx,
+            })
 
     return result
 
@@ -4016,7 +4868,10 @@ class ProjectTrackerHandler(Base):
                     "?flash=no_samples"
                 )
                 return
-            defaults = _compute_seeded_tasks(sample_counts)
+            _prescreen = _db.get_nonjec_prescreen(p["id"])
+            _postqual  = _db.get_nonjec_postqual(p["id"])
+            defaults = _compute_seeded_tasks(sample_counts, _prescreen, _postqual,
+                                              part_type=p.get("part_type", "ttv"))
             _db.bulk_add_gantt_tasks(p["id"], defaults)
         elif action == "clear":
             existing = _db.list_gantt_tasks(p["id"])
@@ -4297,7 +5152,15 @@ class ProjectTrackerHandler(Base):
                     _ent["min_start"] = _precond_end + 1
             elif _cat == "Analysis":
                 _pid2 = t.get("parent_task_id")
-                _ent["min_start"] = (_stress_end_by_id.get(_pid2, _prep_chain_end) if _pid2 else _prep_chain_end) + 1
+                _ent["min_start"] = (_stress_end_by_id.get(_pid2, _prep_chain_end) if _pid2 else _prep_chain_end)
+            elif _cat == "Non-JEDEC Test":
+                _pid2 = t.get("parent_task_id")
+                if _pid2:
+                    # Post-qual: must start the week AFTER its parent stress task ends
+                    _ent["min_start"] = _stress_end_by_id.get(_pid2, _prep_chain_end) + 1
+                else:
+                    # Pre-screen: gated by prep chain end
+                    _ent["min_start"] = _prep_chain_end + 1
             elif _cat == "Reporting":
                 _ent["min_start"] = _reporting_gate + 1
             _task_data_py[_tid] = _ent
@@ -4662,6 +5525,7 @@ class ProjectTrackerHandler(Base):
                       <option value="Stress">Stress</option>
                       <option value="Analysis">Analysis</option>
                       <option value="Reporting">Reporting</option>
+                      <option value="Non-JEDEC Test">Non-JEDEC Test</option>
                     </select>
                   </div>
                   <div class="mb-3" id="e_name_div">
@@ -4726,31 +5590,6 @@ class ProjectTrackerHandler(Base):
           </div>
         </div>
 
-        <!-- Admin Login modal -->
-        <div class="modal fade" id="adminLoginModal" tabindex="-1">
-          <div class="modal-dialog modal-sm">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h6 class="modal-title mb-0"><i class="bi bi-shield-lock me-2"></i>Admin Login</h6>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-              </div>
-              <div class="modal-body">
-                <label class="form-label" style="font-size:.83rem">Password</label>
-                <input type="password" class="form-control form-control-sm" id="adminPwInput"
-                       placeholder="Enter password" onkeydown="if(event.key==='Enter')ganttAdminSubmit()">
-                <div id="adminPwError" style="display:none;font-size:.78rem;color:#dc2626;margin-top:6px">
-                  Incorrect password.
-                </div>
-              </div>
-              <div class="modal-footer">
-                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-sm" onclick="ganttAdminSubmit()"
-                  style="background:var(--df-accent);color:#fff;border:none">Unlock</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
         {
             '''<div class="alert alert-warning d-flex align-items-center gap-2 mb-3 py-2 px-3" role="alert" style="font-size:.85rem">
           <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
@@ -4766,11 +5605,6 @@ class ProjectTrackerHandler(Base):
             {undo_btn}
             {seed_btn}
             {clear_btn}
-            <!-- Admin login / Edit mode -->
-            <button id="ganttAdminBtn" class="btn btn-sm ms-1" onclick="ganttAdminLogin()"
-              style="border:1px solid #d1d5db;color:#6b7280;background:#fff;font-size:.8rem">
-              <i class="bi bi-shield-lock me-1"></i>Admin Login
-            </button>
             <button id="ganttEditBtn" class="btn btn-sm ms-1" onclick="ganttEnterEdit()"
               style="border:1px solid #c4b5fd;color:#6d28d9;background:#fff;font-size:.8rem">
               <i class="bi bi-pencil-square me-1"></i>Edit
@@ -4778,6 +5612,10 @@ class ProjectTrackerHandler(Base):
             <button id="ganttSaveBtn" class="btn btn-sm ms-1" onclick="ganttSave()"
               style="display:none;background:#16a34a;color:#fff;border:none;font-size:.8rem">
               <i class="bi bi-check2 me-1"></i>Save
+            </button>
+            <button id="ganttCancelBtn" class="btn btn-sm ms-1" onclick="ganttCancelEdit()"
+              style="display:none;border:1px solid #fca5a5;color:#dc2626;background:#fff;font-size:.8rem">
+              <i class="bi bi-x-lg me-1"></i>Cancel Edit
             </button>
             <button id="ganttDelSelBtn" class="btn btn-sm ms-1" onclick="ganttDeleteSel()"
               style="display:none;border:1px solid #fca5a5;color:#dc2626;background:#fff;font-size:.8rem">
@@ -4818,6 +5656,7 @@ class ProjectTrackerHandler(Base):
                   <option value="Stress">Stress</option>
                   <option value="Analysis">Analysis</option>
                   <option value="Reporting">Reporting</option>
+                  <option value="Non-JEDEC Test">Non-JEDEC Test</option>
                 </select>
               </div>
               <div class="col-12 col-md-4" id="add_name_div">
@@ -4943,7 +5782,10 @@ class ProjectTrackerHandler(Base):
         let   drag         = null;
         const delSel       = new Set();
         let   editActive   = false;
-        let   adminUnlocked = sessionStorage.getItem('ganttAdminUnlocked') === '1';
+        // adminUnlocked is a global var set by the base template
+        const undoStack    = [];           // client-side undo history
+        const MAX_UNDO     = 30;
+        let   originalState = null;        // snapshot taken when entering edit mode
 
         // Initialise filledWeeks from server data
         Object.entries(TASK_DATA).forEach(([tid, d]) => {{
@@ -4952,22 +5794,11 @@ class ProjectTrackerHandler(Base):
           filledWeeks[tid] = s;
         }});
 
-        // Reflect persistent admin state on page load
-        (function() {{
-          if (adminUnlocked) {{
-            const btn = document.getElementById('ganttAdminBtn');
-            if (btn) {{
-              btn.innerHTML = '<i class="bi bi-shield-fill-check me-1"></i>Admin';
-              btn.style.cssText = 'border:1px solid #16a34a;color:#15803d;background:#f0fdf4;font-size:.8rem';
-              btn.onclick = ganttAdminLogout;
-            }}
-          }}
-        }})();
-
         // ── n_mode / category helpers ────────────────────────────────────────────
         var CAT_N_DEFAULT = {{
           'Preparation': 'total', 'Reporting': 'total',
           'Stress': 'test',       'Analysis':  'test',
+          'Non-JEDEC Test': 'custom',
         }};
         function toggleNcust() {{
           document.getElementById('e_ncust_div').style.display =
@@ -4983,8 +5814,9 @@ class ProjectTrackerHandler(Base):
           if (def) document.getElementById('e_nmode').value = def;
           toggleNcust();
           const pd = document.getElementById('e_parent_div');
-          if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
-          if (cat === 'Analysis') populateEditParentSel(null);
+          const needsParent = cat === 'Analysis' || cat === 'Non-JEDEC Test';
+          if (pd) pd.style.display = needsParent ? '' : 'none';
+          if (needsParent) populateEditParentSel(null);
           // stress name dropdown
           const nd = document.getElementById('e_name_div');
           const sd = document.getElementById('e_stress_div');
@@ -5008,7 +5840,7 @@ class ProjectTrackerHandler(Base):
               nmSel.value === 'custom' ? '' : 'none';
           }}
           const pd = document.getElementById('add_parent_div');
-          if (pd) pd.style.display = cat === 'Analysis' ? '' : 'none';
+          if (pd) pd.style.display = (cat === 'Analysis' || cat === 'Non-JEDEC Test') ? '' : 'none';
           // stress name dropdown
           const nd = document.getElementById('add_name_div');
           const sd = document.getElementById('add_stress_div');
@@ -5154,40 +5986,33 @@ class ProjectTrackerHandler(Base):
           bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
         }}
 
-        // ── Admin login / password-protected edit mode ───────────────────────────
-        function ganttAdminLogin() {{
-          document.getElementById('adminPwInput').value = '';
-          document.getElementById('adminPwError').style.display = 'none';
-          bootstrap.Modal.getOrCreateInstance(document.getElementById('adminLoginModal')).show();
-          setTimeout(() => document.getElementById('adminPwInput').focus(), 400);
+        // ── Undo stack helpers ────────────────────────────────────────────────────
+        function _snapshotFW() {{
+          const snap = {{}};
+          Object.entries(filledWeeks).forEach(([tid, fw]) => snap[tid] = new Set(fw));
+          return snap;
         }}
-        function ganttAdminSubmit() {{
-          const pw = document.getElementById('adminPwInput').value;
-          if (pw !== 'password') {{
-            document.getElementById('adminPwError').style.display = '';
-            return;
-          }}
-          adminUnlocked = true;
-          sessionStorage.setItem('ganttAdminUnlocked', '1');
-          bootstrap.Modal.getOrCreateInstance(document.getElementById('adminLoginModal')).hide();
-          const btn = document.getElementById('ganttAdminBtn');
-          if (btn) {{
-            btn.innerHTML = '<i class="bi bi-shield-fill-check me-1"></i>Admin';
-            btn.style.cssText = 'border:1px solid #16a34a;color:#15803d;background:#f0fdf4;font-size:.8rem';
-            btn.onclick = ganttAdminLogout;
-          }}
+        function pushUndoState() {{
+          if (!editActive) return;
+          undoStack.push(_snapshotFW());
+          if (undoStack.length > MAX_UNDO) undoStack.shift();
         }}
-        function ganttAdminLogout() {{
-          adminUnlocked = false;
-          sessionStorage.removeItem('ganttAdminUnlocked');
-          if (editActive) ganttDeactivateEdit();
-          const btn = document.getElementById('ganttAdminBtn');
-          if (btn) {{
-            btn.innerHTML = '<i class="bi bi-shield-lock me-1"></i>Admin Login';
-            btn.style.cssText = 'border:1px solid #d1d5db;color:#6b7280;background:#fff;font-size:.8rem';
-            btn.onclick = ganttAdminLogin;
-          }}
+        function ganttUndo() {{
+          if (undoStack.length === 0) return;
+          const snap = undoStack.pop();
+          Object.entries(snap).forEach(([tid, fw]) => filledWeeks[tid] = new Set(fw));
+          delSel.clear(); ganttUpdateDelBtn(); ganttRenderAll();
         }}
+        function ganttCancelEdit() {{
+          if (originalState) {{
+            Object.entries(originalState).forEach(([tid, fw]) => filledWeeks[tid] = new Set(fw));
+            dirtyTids.clear();
+          }}
+          undoStack.length = 0;
+          originalState = null;
+          ganttDeactivateEdit();
+        }}
+
         function ganttEnterEdit() {{
           if (!adminUnlocked) {{
             ganttAdminLogin();
@@ -5195,9 +6020,12 @@ class ProjectTrackerHandler(Base):
           }}
           if (editActive) {{ ganttDeactivateEdit(); return; }}
           editActive = true;
+          originalState = _snapshotFW();   // capture state for Cancel
+          undoStack.length = 0;
           document.getElementById('ganttEditBtn').style.cssText =
             'border:1px solid #7c3aed;color:#6d28d9;background:#f5f3ff;font-size:.8rem';
           document.getElementById('ganttSaveBtn').style.display = '';
+          document.getElementById('ganttCancelBtn').style.display = '';
           document.getElementById('editHint').style.display = '';
           document.querySelectorAll('#ganttSidebody tr').forEach(r => r.style.cursor = 'pointer');
         }}
@@ -5210,7 +6038,8 @@ class ProjectTrackerHandler(Base):
           selTid = null; drag = null; delSel.clear();
           document.getElementById('ganttEditBtn').style.cssText =
             'border:1px solid #c4b5fd;color:#6d28d9;background:#fff;font-size:.8rem';
-          document.getElementById('ganttSaveBtn').style.display = 'none';
+          document.getElementById('ganttSaveBtn').style.display  = 'none';
+          document.getElementById('ganttCancelBtn').style.display = 'none';
           document.getElementById('ganttDelSelBtn').style.display = 'none';
           document.getElementById('editHint').style.display = 'none';
           document.querySelectorAll('#ganttSidebody tr').forEach(r => r.style.cursor = '');
@@ -5323,11 +6152,55 @@ class ProjectTrackerHandler(Base):
         function cascadeAnalysisAll() {{
           const stressEnd = _buildStressEndMap();
           Object.entries(TASK_DATA).forEach(([tid, d]) => {{
-            if (d.category !== 'Analysis') return;
+            const isAnalysis   = d.category === 'Analysis';
+            const isPostQualNJ = d.category === 'Non-JEDEC Test' && !!d.parent_task_id;
+            if (!isAnalysis && !isPostQualNJ) return;
             const parentEnd = stressEnd[String(d.parent_task_id)] ?? prepChainEnd;
-            _moveTid(tid, parentEnd + 1);
+            // Non-JEDEC post-qual must start AFTER stress (base = parentEnd+1);
+            // Analysis may overlap last stress week (base = parentEnd).
+            const base = isPostQualNJ ? parentEnd + 1 : parentEnd;
+            const fw = filledWeeks[String(tid)] || new Set();
+            const curStart = fw.size ? Math.min(...fw) : base;
+            const oldMinStart = d.min_start || base;
+            const offset = Math.max(0, curStart - oldMinStart);
+            _moveTid(tid, base + offset);
           }});
           cascadeReporting();
+        }}
+
+        // Live preview: temporarily shift analysis tasks while stress bar is being dragged
+        function previewStressCascade(stressTid) {{
+          if (!drag || String(drag.tid) !== String(stressTid)) return;
+          const fw   = filledWeeks[String(stressTid)] || new Set();
+          const data = TASK_DATA[String(stressTid)] || {{}};
+          const minS = data.min_start || 1;
+          const hi   = Math.max(drag.startW, drag.curW);
+          const lo   = Math.min(drag.startW, drag.curW);
+          let projectedEnd;
+          if (drag.mode === 'fill') {{
+            const existingMax = fw.size ? Math.max(...fw) : minS - 1;
+            projectedEnd = Math.max(hi, existingMax);
+          }} else {{
+            // delete: shrink from edges
+            const allFw = [...fw].filter(w => !(w >= lo && w <= hi)).sort((a,b) => a-b);
+            projectedEnd = allFw.length ? allFw[allFw.length - 1] : minS;
+          }}
+          Object.entries(TASK_DATA).forEach(([aTid, d]) => {{
+            const isAnalysis   = d.category === 'Analysis';
+            const isPostQualNJ = d.category === 'Non-JEDEC Test' && !!d.parent_task_id;
+            if (!isAnalysis && !isPostQualNJ) return;
+            if (String(d.parent_task_id) !== String(stressTid)) return;
+            const base = isPostQualNJ ? projectedEnd + 1 : projectedEnd;
+            const afw = filledWeeks[String(aTid)] || new Set();
+            const dur = _fwDur(aTid);
+            const curStart = afw.size ? Math.min(...afw) : base;
+            const oldMinStart = d.min_start || base;
+            const offset = Math.max(0, curStart - oldMinStart);
+            const newStart = base + offset;
+            const newFW = new Set();
+            for (let w = newStart; w < newStart + dur; w++) newFW.add(w);
+            filledWeeks[String(aTid)] = newFW;
+          }});
         }}
         function cascadeReporting() {{
           const byParent = {{}};
@@ -5421,7 +6294,16 @@ class ProjectTrackerHandler(Base):
             const w = parseInt(cell.dataset.week);
             if (drag.mode === null && w !== drag.startW)
               drag.mode = w > drag.startW ? 'fill' : 'delete';
-            if (w !== drag.curW) {{ drag.curW = w; ganttRenderRow(drag.tid); }}
+            if (w !== drag.curW) {{
+              drag.curW = w;
+              const dragData = TASK_DATA[String(drag.tid)] || {{}};
+              if (dragData.category === 'Stress' && drag.mode !== null) {{
+                previewStressCascade(drag.tid);
+                ganttRenderAll();
+              }} else {{
+                ganttRenderRow(drag.tid);
+              }}
+            }}
           }});
         }}
         // Snap all filled weeks for a task to be contiguous (no gaps)
@@ -5442,7 +6324,17 @@ class ProjectTrackerHandler(Base):
           const hi   = Math.max(drag.startW, drag.curW);
           const mode = drag.mode || (fw.has(drag.startW) ? 'delete' : 'fill');
 
+          // Single-click on an already-red (delSel) cell → toggle it off
+          if (!drag.mode && lo === hi && fw.has(lo) && delSel.has(lo)) {{
+            delSel.delete(lo);
+            ganttUpdateDelBtn();
+            ganttRenderRow(tid);
+            drag = null;
+            return;
+          }}
+
           if (mode === 'fill') {{
+            pushUndoState();
             if (data.locked_start) {{
               // Prep: extend end to hi, start locked at minS
               const newEnd = Math.max(hi, minS);
@@ -5471,16 +6363,16 @@ class ProjectTrackerHandler(Base):
           }} else {{
             for (let w = lo; w <= hi; w++) {{ if (fw.has(w)) delSel.add(w); }}
             ganttUpdateDelBtn();
+            ganttRenderRow(tid);
           }}
           drag = null;
-          if (data.category !== 'Preparation' && data.category !== 'Stress' && data.category !== 'Analysis')
-            ganttRenderRow(tid);
         }}
         document.addEventListener('mouseup', () => {{ ganttCommitDrag(); }});
 
         // ── Delete ────────────────────────────────────────────────────────────────
         function ganttDeleteSel() {{
           if (!selTid) return;
+          pushUndoState();
           const tid  = String(selTid);
           const data = TASK_DATA[tid] || {{}};
           const fw   = filledWeeks[tid] || new Set();
@@ -5534,8 +6426,13 @@ class ProjectTrackerHandler(Base):
         // ── Keyboard shortcuts ────────────────────────────────────────────────────
         document.addEventListener('keydown', e => {{
           if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {{
-            const uf = document.getElementById('undoForm');
-            if (uf) {{ e.preventDefault(); uf.submit(); }}
+            e.preventDefault();
+            if (editActive) {{
+              ganttUndo();  // client-side undo while editing
+            }} else {{
+              const uf = document.getElementById('undoForm');
+              if (uf) uf.submit();  // server-side undo when not in edit mode
+            }}
           }}
           const tag = document.activeElement ? document.activeElement.tagName : '';
           const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';

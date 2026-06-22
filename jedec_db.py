@@ -125,6 +125,36 @@ def init_db():
             "ALTER TABLE project_gantt ADD COLUMN parent_task_id INTEGER DEFAULT NULL",
             # Rename Preconditioning test_key from 'pc' (clashes with Power Cycling) to 'precond'
             "UPDATE project_gantt SET test_key='precond' WHERE test_key='pc' AND category='Stress'",
+            """CREATE TABLE IF NOT EXISTS project_nonjec_prescreen (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                test_type      TEXT    NOT NULL DEFAULT 'pull_test',
+                custom_name    TEXT    DEFAULT '',
+                duration_weeks INTEGER DEFAULT 1,
+                sample_count   INTEGER DEFAULT 0,
+                sort_order     INTEGER DEFAULT 0)""",
+            """CREATE TABLE IF NOT EXISTS project_nonjec_postqual (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id             INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                test_type              TEXT    NOT NULL DEFAULT 'pull_test',
+                custom_name            TEXT    DEFAULT '',
+                duration_weeks         INTEGER DEFAULT 1,
+                parent_stress_test_key TEXT    DEFAULT '',
+                sample_count           INTEGER DEFAULT 0,
+                sort_order             INTEGER DEFAULT 0)""",
+            """CREATE TABLE IF NOT EXISTS project_nonjec_results (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id        INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                entry_id          INTEGER NOT NULL,
+                source            TEXT    NOT NULL DEFAULT 'pre',
+                pull_strength_mpa REAL    DEFAULT NULL,
+                comments          TEXT    DEFAULT '',
+                img_1             TEXT    DEFAULT '',
+                img_2             TEXT    DEFAULT '',
+                img_3             TEXT    DEFAULT '',
+                img_4             TEXT    DEFAULT '',
+                img_5             TEXT    DEFAULT '',
+                UNIQUE (project_id, entry_id, source))""",
         ]:
             try:
                 con.execute(stmt)
@@ -512,3 +542,93 @@ def get_csam_image(iid: int) -> dict | None:
 def delete_csam_image(iid: int):
     with _conn() as con:
         con.execute("DELETE FROM project_csam WHERE id=?", (iid,))
+
+# ── Non-JEDEC Tests (Pre-screen & Post-Qual) ───────────────────────────────────
+
+def get_nonjec_prescreen(pid: int) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM project_nonjec_prescreen WHERE project_id=? ORDER BY sort_order, id",
+            (pid,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+def save_nonjec_prescreen(pid: int, entries: list[dict]):
+    with _conn() as con:
+        con.execute("DELETE FROM project_nonjec_prescreen WHERE project_id=?", (pid,))
+        for i, e in enumerate(entries):
+            con.execute(
+                """INSERT INTO project_nonjec_prescreen
+                   (project_id, test_type, custom_name, duration_weeks, sample_count, sort_order)
+                   VALUES (?,?,?,?,?,?)""",
+                (pid, e.get("test_type", "pull_test"), e.get("custom_name", ""),
+                 int(e.get("duration_weeks", 1)), int(e.get("sample_count", 0)),
+                 (i + 1) * 10)
+            )
+        _touch(con, pid)
+
+def get_nonjec_postqual(pid: int) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM project_nonjec_postqual WHERE project_id=? ORDER BY sort_order, id",
+            (pid,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+def save_nonjec_postqual(pid: int, entries: list[dict]):
+    with _conn() as con:
+        con.execute("DELETE FROM project_nonjec_postqual WHERE project_id=?", (pid,))
+        for i, e in enumerate(entries):
+            con.execute(
+                """INSERT INTO project_nonjec_postqual
+                   (project_id, test_type, custom_name, duration_weeks,
+                    parent_stress_test_key, sample_count, sort_order)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (pid, e.get("test_type", "pull_test"), e.get("custom_name", ""),
+                 int(e.get("duration_weeks", 1)),
+                 e.get("parent_stress_test_key", ""),
+                 int(e.get("sample_count", 0)), (i + 1) * 10)
+            )
+        _touch(con, pid)
+
+# ── Non-JEDEC Test Results ────────────────────────────────────────────────────
+
+def save_nonjec_result(pid: int, entry_id: int, source: str,
+                       pull_strength_mpa=None, comments: str = "",
+                       images: list | None = None) -> None:
+    """Upsert a result row for one non-JEDEC test entry.
+
+    source: 'pre' (prescreen) or 'pq' (postqual)
+    images: list of base64 data-URI strings, max 5; missing slots stored as ''.
+    """
+    imgs = (images or []) + [""] * 5
+    imgs = imgs[:5]
+    with _conn() as con:
+        con.execute(
+            """INSERT INTO project_nonjec_results
+               (project_id, entry_id, source, pull_strength_mpa, comments,
+                img_1, img_2, img_3, img_4, img_5)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(project_id, entry_id, source) DO UPDATE SET
+                 pull_strength_mpa=excluded.pull_strength_mpa,
+                 comments=excluded.comments,
+                 img_1=excluded.img_1, img_2=excluded.img_2,
+                 img_3=excluded.img_3, img_4=excluded.img_4,
+                 img_5=excluded.img_5""",
+            (pid, entry_id, source,
+             pull_strength_mpa, comments.strip(),
+             imgs[0], imgs[1], imgs[2], imgs[3], imgs[4])
+        )
+        _touch(con, pid)
+
+def get_nonjec_results(pid: int) -> dict:
+    """Return {(entry_id, source): result_dict} for all saved non-JEDEC results."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM project_nonjec_results WHERE project_id=?", (pid,)
+        ).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        out[(d["entry_id"], d["source"])] = d
+    return out
