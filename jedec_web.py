@@ -1222,6 +1222,37 @@ class LookupHandler(Base):
               </div>
             </div>"""
 
+        # Build deduplicated spec document list with associated test names
+        _test_name_map = {k: t["full_name"] for k, t in TESTS.items()}
+        _test_name_map["jesd47"] = "Stress-Test-Driven Qualification of Integrated Circuits"
+        _test_name_map["precond"] = "Preconditioning (MSL)"
+        _spec_map: dict = {}
+        _spec_order: list = []
+        for _key, _docs in SPEC_URLS.items():
+            _tname = _test_name_map.get(_key, _key)
+            for _lbl, _url in _docs:
+                if _lbl not in _spec_map:
+                    _spec_map[_lbl] = {"url": _url, "tests": []}
+                    _spec_order.append(_lbl)
+                if _tname not in _spec_map[_lbl]["tests"]:
+                    _spec_map[_lbl]["tests"].append(_tname)
+        spec_list_rows = ""
+        for _lbl in sorted(_spec_order):
+            _info = _spec_map[_lbl]
+            _tests_str = " / ".join(_info["tests"])
+            spec_list_rows += f"""
+            <div class="d-flex align-items-center gap-3 py-2 border-bottom">
+              <i class="bi bi-file-earmark-pdf text-danger flex-shrink-0 fs-5"></i>
+              <div class="flex-grow-1">
+                <span class="fw-semibold">{_lbl}</span>
+                <span class="text-muted ms-2" style="font-size:.82rem">&mdash; {_tests_str}</span>
+              </div>
+              <a href="{_info['url']}" download="{_lbl}.pdf"
+                 class="btn btn-sm btn-outline-secondary flex-shrink-0">
+                <i class="bi bi-download me-1"></i>{_lbl}
+              </a>
+            </div>"""
+
         body = f"""
         <div class="d-flex align-items-center mb-3">
           <h4 class="mb-0" style="font-weight:300">Test Condition Lookup</h4>
@@ -1345,6 +1376,17 @@ class LookupHandler(Base):
             </a>
           </div>
         </div>
+
+        <div class="card mt-2 mb-2 shadow-sm">
+          <div class="card-header py-2 px-3 d-flex align-items-center gap-2">
+            <i class="bi bi-journals text-secondary"></i>
+            <strong style="font-size:.9rem">JEDEC Specification Documents</strong>
+          </div>
+          <div class="card-body px-3 py-1">
+            {spec_list_rows}
+          </div>
+        </div>
+
         <script>
         const TC_DATA     = {tc_js_data};
         const TSHOCK_DATA = {tshock_js_data};
