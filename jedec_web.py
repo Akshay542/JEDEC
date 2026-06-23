@@ -1377,13 +1377,21 @@ class LookupHandler(Base):
           </div>
         </div>
 
-        <div class="card mt-2 mb-2 shadow-sm">
-          <div class="card-header py-2 px-3 d-flex align-items-center gap-2">
-            <i class="bi bi-journals text-secondary"></i>
-            <strong style="font-size:.9rem">JEDEC Specification Documents</strong>
-          </div>
-          <div class="card-body px-3 py-1">
-            {spec_list_rows}
+        <div class="accordion shadow-sm mt-2 mb-2" id="accSpecs">
+          <div class="accordion-item">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-2 px-3" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#collapseSpecs"
+                      style="font-size:.9rem">
+                <i class="bi bi-journals text-secondary me-2"></i>
+                <strong>JEDEC Specification Documents</strong>
+              </button>
+            </h2>
+            <div id="collapseSpecs" class="accordion-collapse collapse" data-bs-parent="#accSpecs">
+              <div class="accordion-body px-3 py-1">
+                {spec_list_rows}
+              </div>
+            </div>
           </div>
         </div>
 
