@@ -883,6 +883,10 @@ class LookupHandler(Base):
         rows = ""
         for key, t in tests.items():
             badges = ""
+            if t["destructive"]:
+                badges += '<span class="badge bg-danger bg-opacity-75 ms-2" style="font-size:.7rem">Destructive</span>'
+            else:
+                badges += '<span class="badge bg-success bg-opacity-75 ms-2" style="font-size:.7rem">Non-Destructive</span>'
             if t["active_devices"]:
                 badges += '<span class="badge bg-info text-dark ms-2" style="font-size:.7rem">Active Device</span>'
             # "Additional Reli Test Prohibited" shown only in the expanded detail panel, not as a header badge
@@ -1272,7 +1276,65 @@ class LookupHandler(Base):
         </div>
         <div class="accordion shadow-sm" id="accTest">{rows}</div>
 
-        <div class="card mt-4 mb-2 shadow-sm border-warning">
+        <div class="card mt-4 mb-2 shadow-sm border-secondary">
+          <div class="card-header bg-secondary bg-opacity-10 py-2 px-3 d-flex align-items-center gap-2">
+            <i class="bi bi-tools text-secondary"></i>
+            <strong style="font-size:.9rem">Engineering Analysis</strong>
+          </div>
+          <div class="card-body px-3 py-2" style="font-size:.84rem; line-height:1.6">
+            <p class="mb-2 text-muted">The following techniques are used for root-cause investigation and failure analysis. They are not qualification tests — samples are consumed and <strong>cannot be reused for qualification</strong>.</p>
+            <div class="accordion accordion-flush border rounded" id="eng-analysis-acc">
+              <div class="accordion-item">
+                <h2 class="accordion-header">
+                  <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#ea-pull" style="font-size:.84rem">
+                    <strong class="me-2">Pull-Test</strong>
+                    <span class="text-muted" style="font-size:.83rem">Bond wire / die-attach strength</span>
+                    <span class="badge bg-danger bg-opacity-75 ms-2" style="font-size:.7rem">Destructive</span>
+                  </button>
+                </h2>
+                <div id="ea-pull" class="accordion-collapse collapse" data-bs-parent="#eng-analysis-acc">
+                  <div class="accordion-body py-2 px-3" style="font-size:.83rem; line-height:1.7">
+                    <p class="mb-2">A mechanical pull or shear force is applied to a bond wire or die-attach joint until failure. The force at failure (gram-force or millinewton) and the failure mode (e.g., wire heel break, bond lift, intermetallic fracture, die-attach cohesive failure) are recorded.</p>
+                    <ul class="mb-2 ps-3">
+                      <li><strong>Wire bond pull:</strong> Per MIL-STD-883 Method 2011 / ASTM F459. A hook is placed under the wire mid-span and pulled perpendicular to the substrate.</li>
+                      <li><strong>Ball/wedge shear:</strong> Per ASTM F1269 / JEDEC JESD22-B116. A shear tool pushes laterally against the ball or wedge bond.</li>
+                      <li><strong>Die shear:</strong> A shear tool pushes against the die sidewall to measure die-attach adhesion strength.</li>
+                    </ul>
+                    <div class="alert alert-danger py-1 px-2 mb-0 d-flex gap-2 align-items-start" style="font-size:.8rem" role="alert">
+                      <i class="bi bi-exclamation-triangle-fill text-danger flex-shrink-0 mt-1"></i>
+                      <span>The sample is physically destroyed in the process. Tested samples may not be returned to the qualification lot.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="accordion-item">
+                <h2 class="accordion-header">
+                  <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#ea-xsem" style="font-size:.84rem">
+                    <strong class="me-2">X-SEM</strong>
+                    <span class="text-muted" style="font-size:.83rem">Cross-sectional scanning electron microscopy</span>
+                    <span class="badge bg-danger bg-opacity-75 ms-2" style="font-size:.7rem">Destructive</span>
+                  </button>
+                </h2>
+                <div id="ea-xsem" class="accordion-collapse collapse" data-bs-parent="#eng-analysis-acc">
+                  <div class="accordion-body py-2 px-3" style="font-size:.83rem; line-height:1.7">
+                    <p class="mb-2">The package is mechanically or focused-ion-beam (FIB) sectioned through the region of interest, then imaged under a scanning electron microscope (SEM). Energy-dispersive X-ray spectroscopy (EDS/EDX) may be performed simultaneously to map elemental composition.</p>
+                    <ul class="mb-2 ps-3">
+                      <li>Reveals internal voids, cracks, delamination, intermetallic growth, and solder joint morphology not visible by CSAM.</li>
+                      <li>FIB-SEM allows site-specific cross-sections to sub-micron precision; mechanical polishing is used for broader area surveys.</li>
+                      <li>Common targets: bond interface, SCD-to-die bond line, solder joints, via fill integrity.</li>
+                    </ul>
+                    <div class="alert alert-danger py-1 px-2 mb-0 d-flex gap-2 align-items-start" style="font-size:.8rem" role="alert">
+                      <i class="bi bi-exclamation-triangle-fill text-danger flex-shrink-0 mt-1"></i>
+                      <span>The sample is physically destroyed in the process. Tested samples may not be returned to the qualification lot.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-2 mb-2 shadow-sm border-warning">
           <div class="card-header bg-warning bg-opacity-10 py-2 px-3 d-flex align-items-center gap-2">
             <i class="bi bi-exclamation-triangle-fill text-warning"></i>
             <strong style="font-size:.9rem">In Case of Part Failure</strong>
@@ -1280,9 +1342,9 @@ class LookupHandler(Base):
           <div class="card-body px-3 py-2" style="font-size:.84rem; line-height:1.6">
             <p class="mb-2">The following guidance is drawn from <strong>JESD47I</strong>:</p>
             <ul class="mb-2 ps-3">
-              <li><strong>Discounting failures (§3.6):</strong> A failure may be discounted from the sample count if it can be documented that the root cause is unrelated to the test conditions (e.g., handling damage, ESD, pre-existing defect). Written evidence of the unrelated cause is required.</li>
+              <li><strong>Discounting failures (§3.6):</strong> A failure may be discounted from the sample count if it can be documented that the root cause is unrelated to the test conditions (e.g., handling damage, significant delamination, SCD/Si cracking, pre-existing defects). Evidence of the unrelated cause is required.</li>
               <li><strong>Sample reusability (§3.5):</strong> Devices used in <em>nondestructive</em> tests may be reused in subsequent stress tests. Devices subjected to <em>destructive</em> analysis may not be reused for qualification — they are limited to engineering analysis only.</li>
-              <li><strong>Failure analysis &amp; requalification (§4.2.3):</strong> Failed devices should be analyzed for root cause; only a <em>representative sample</em> needs to be analyzed, not every failed part. Successful requalification requires demonstrating corrective and preventive actions (CAPA). A part or qualification family may still be qualified provided containment of the problem is demonstrated while CAPAs are being implemented. Only the tests affected by the change that caused the failure need to be repeated — a full requalification from scratch is not required.</li>
+              <li><strong>Failure analysis &amp; requalification (§4.2.3):</strong> Failed devices should be analyzed for root cause; only a <em>representative sample</em> needs to be analyzed, not every failed part. Successful requalification requires demonstrating corrective and preventive actions. Only the tests affected by the change that caused the failure need to be repeated — a full requalification from scratch is not required.</li>
             </ul>
             <p class="mb-0 text-muted" style="font-size:.8rem">Refer to JESD47I for full normative requirements. The same §3.8 sample size formula applies to any requalification run.</p>
           </div>
@@ -3903,7 +3965,7 @@ class ProjectSampleSizeHandler(Base):
           </div>
         </div>"""
 
-        # ── Pre-screen Destructive Tests panel ────────────────────────────
+        # ── Pre-Qual Engineering Analysis panel ────────────────────────────
         def _ps_type_opts(sel="pull_test"):
             return "".join(
                 f'<option value="{k}"{" selected" if k == sel else ""}>{v["label"]}</option>'
@@ -3930,7 +3992,7 @@ class ProjectSampleSizeHandler(Base):
         prescreen_panel = f"""
         <div class="card mt-3" style="border:1px solid var(--df-border)">
           <div class="card-df d-flex justify-content-between align-items-center">
-            <h6 class="mb-0" style="font-size:.82rem">Pre-screen Destructive Tests</h6>
+            <h6 class="mb-0" style="font-size:.82rem">Pre-Qual Engineering Analysis</h6>
             <span style="font-size:.7rem;color:rgba(255,255,255,.6)">Samples not entering JEDEC tests</span>
           </div>
           <div class="card-body p-0">
@@ -3963,7 +4025,7 @@ class ProjectSampleSizeHandler(Base):
           </div>
         </div>"""
 
-        # ── Post-Qual Destructive Tests panel ─────────────────────────────
+        # ── Post-Qual Engineering Analysis panel ─────────────────────────────
         _jedec_test_opts_base = '<option value="">— select JEDEC test —</option>' + "".join(
             f'<option value="{key}">{t["name"]}</option>' for key, t in tests.items()
         )
@@ -4000,7 +4062,7 @@ class ProjectSampleSizeHandler(Base):
         postqual_panel = f"""
         <div class="card mt-3" style="border:1px solid var(--df-border)">
           <div class="card-df d-flex justify-content-between align-items-center">
-            <h6 class="mb-0" style="font-size:.82rem">Post-Qual Destructive Tests</h6>
+            <h6 class="mb-0" style="font-size:.82rem">Post-Qual Engineering Analysis</h6>
             <span style="font-size:.7rem;color:rgba(255,255,255,.6)">Samples drawn from post-JEDEC pool</span>
           </div>
           <div class="card-body p-0">
