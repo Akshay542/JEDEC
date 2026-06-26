@@ -884,7 +884,7 @@ class LookupHandler(Base):
         for key, t in tests.items():
             badges = ""
             if t["destructive"]:
-                badges += '<span class="badge bg-danger bg-opacity-75 ms-2" style="font-size:.7rem">Destructive</span>'
+                badges += '<span class="badge bg-warning text-dark ms-2" style="font-size:.7rem">Destructive</span>'
             else:
                 badges += '<span class="badge bg-success bg-opacity-75 ms-2" style="font-size:.7rem">Non-Destructive</span>'
             if t["active_devices"]:
