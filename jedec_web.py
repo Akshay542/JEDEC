@@ -5900,7 +5900,7 @@ class ProjectTrackerHandler(Base):
             </div>
 
             <!-- Chart -->
-            <div style="overflow-x:auto;flex:1 1 auto">
+            <div id="ganttScroll" style="overflow-x:auto;flex:1 1 auto">
               <table id="ganttChartTable" style="border-collapse:collapse;height:100%;user-select:none">
                 <thead>
                   <tr style="background:#f3f4f6">{month_headers}</tr>
@@ -5921,6 +5921,19 @@ class ProjectTrackerHandler(Base):
 
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
         <script>
+        // ── Scroll chart to current week on load ──────────────────────────────────
+        document.addEventListener("DOMContentLoaded", function() {{
+          const scroller = document.getElementById("ganttScroll");
+          const nowCell  = scroller && scroller.querySelector("td[data-now='1']");
+          if (scroller && nowCell) {{
+            const cellLeft  = nowCell.offsetLeft;
+            const cellWidth = nowCell.offsetWidth;
+            const scrollWidth = scroller.clientWidth;
+            // Centre the current-week column in the viewport
+            scroller.scrollLeft = cellLeft - scrollWidth / 2 + cellWidth / 2;
+          }}
+        }});
+
         // ── Server data ───────────────────────────────────────────────────────────
         const TASK_DATA        = {_task_data_js};
         const PREP_ORDER       = {_prep_order_js};
