@@ -4864,7 +4864,7 @@ def _compute_seeded_tasks(sample_counts: dict,
     for name, cat, key, dur in prep:
         result.append({"task_name": name, "category": cat, "test_key": key,
                         "start_week": sw, "duration": dur})
-        sw += dur
+        sw += dur - 1  # next prep starts on the last week of this one (≥ X overlap rule)
 
     # ── Phase 2: stress + post-stress pairs (all pairs start same week) ───
     # Each pair: (stress_name, stress_key, stress_dur,
@@ -4913,13 +4913,18 @@ def _compute_seeded_tasks(sample_counts: dict,
             parented_postqual.setdefault(pk, []).append(e)
 
     pairs = [
-        ("uHAST",    "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
-        ("TC",       "tc",     6, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
-        ("T-Shock",  "tshock", 1, "Post-T-Shock CSAM", "Post-T-Shock Testing", "tshock", cw(n("tshock"))),
-        ("M-Shock",  "mshock", 1, "Post-M-Shock CSAM", "Post-M-Shock Testing", "mshock", cw(n("mshock"))),
-        ("Vibration","vib",    1, "Post-Vib CSAM",     "Post-Vib Testing",     "vib",    cw(n("vib"))),
-        ("HTS",      "hts",    6, "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
+        ("uHAST",      "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
+        ("TC",         "tc",     6, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
+        ("T-Shock",    "tshock", 1, "Post-T-Shock CSAM", "Post-T-Shock Testing", "tshock", cw(n("tshock"))),
+        ("M-Shock",    "mshock", 1, "Post-M-Shock CSAM", "Post-M-Shock Testing", "mshock", cw(n("mshock"))),
+        ("Vibration",  "vib",    1, "Post-Vib CSAM",     "Post-Vib Testing",     "vib",    cw(n("vib"))),
+        ("HTS",        "hts",    6, "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
     ]
+    # Power Cycling is applicable to Active and TTV, not Die
+    if is_ttv:
+        pairs.append(
+            ("Pwr Cycling", "pc", 2, "Post-PC CSAM", "Post-PC Testing", "pc", cw(n("pc")))
+        )
 
     # Standard stress tests start after Preconditioning [2wk]
     other_stress_start = stress_start + 2
@@ -5116,6 +5121,16 @@ class ProjectTrackerHandler(Base):
                     status="active",
                     completed_at=None,
                 )
+        elif action == "test_cancel":
+            test_key = self.get_argument("test_key", "").strip()
+            if test_key:
+                _db.upsert_test_tracker(
+                    p["id"], test_key,
+                    status="pending",
+                    started_at=None,
+                    completed_at=None,
+                    duration_hours=None,
+                )
         elif action == "bulk_edit":
             import json as _json
             try:
@@ -5163,6 +5178,7 @@ class ProjectTrackerHandler(Base):
         # Which week number is today (1-indexed from anchor)?
         days_since = (today - anchor).days
         current_week = max(1, days_since // 7 + 1) if days_since >= 0 else None
+        today_day_idx = days_since if days_since >= 0 else -1
 
         # ISO-week values passed to JS for form display/conversion
         _epoch = date(1970, 1, 1)
@@ -5297,27 +5313,28 @@ class ProjectTrackerHandler(Base):
                 _ent["prep_idx"]     = _ix
                 _ent["min_start"]    = (
                     1 if _ix == 0
-                    else _prep_sorted[_ix-1]["start_week"] + _prep_sorted[_ix-1]["duration"]
-                )
+                    else _prep_sorted[_ix-1]["start_week"] + _prep_sorted[_ix-1]["duration"] - 1
+                )  # ≥ X rule: can start on the last week of the previous prep task
             elif _cat == "Stress":
                 # Preconditioning gated by prep; all others gated by Preconditioning end
+                # Overlap on the final week of the gating step is allowed
                 if _tid in _precond_ids:
-                    _ent["min_start"] = _prep_chain_end + 1
+                    _ent["min_start"] = _prep_chain_end
                 else:
-                    _ent["min_start"] = _precond_end + 1
+                    _ent["min_start"] = _precond_end
             elif _cat == "Analysis":
                 _pid2 = t.get("parent_task_id")
                 _ent["min_start"] = (_stress_end_by_id.get(_pid2, _prep_chain_end) if _pid2 else _prep_chain_end)
             elif _cat == "Non-JEDEC Test":
                 _pid2 = t.get("parent_task_id")
                 if _pid2:
-                    # Post-qual: must start the week AFTER its parent stress task ends
-                    _ent["min_start"] = _stress_end_by_id.get(_pid2, _prep_chain_end) + 1
+                    # Post-qual: may start on the same week the parent stress task ends
+                    _ent["min_start"] = _stress_end_by_id.get(_pid2, _prep_chain_end)
                 else:
                     # Pre-screen: gated by prep chain end
-                    _ent["min_start"] = _prep_chain_end + 1
+                    _ent["min_start"] = _prep_chain_end
             elif _cat == "Reporting":
-                _ent["min_start"] = _reporting_gate + 1
+                _ent["min_start"] = _reporting_gate
             _task_data_py[_tid] = _ent
 
         _task_data_js        = _json_.dumps({str(k): v for k, v in _task_data_py.items()})
@@ -5582,18 +5599,31 @@ class ProjectTrackerHandler(Base):
                 else:
                     status_body = '<div style="font-size:.72rem;color:#6b7280;margin-top:4px">In progress</div>'
                 action_html = (
-                    f'<form method="post" action="/projects/{pid}/tracker" class="mt-2">'
+                    f'<form method="post" action="/projects/{pid}/tracker" class="mt-2 mb-1">'
                     f'<input type="hidden" name="action" value="test_complete">'
                     f'<input type="hidden" name="test_key" value="{tkey}">'
                     f'<button type="submit" class="btn btn-sm w-100"'
                     f' style="background:#16a34a;color:#fff;border:none;'
                     f'font-size:.72rem;padding:3px 0">Mark Complete</button>'
                     f'</form>'
+                    f'<form method="post" action="/projects/{pid}/tracker">'
+                    f'<input type="hidden" name="action" value="test_cancel">'
+                    f'<input type="hidden" name="test_key" value="{tkey}">'
+                    f'<button type="submit" class="btn btn-sm w-100"'
+                    f' style="background:#fff;color:#dc2626;border:1px solid #fca5a5;'
+                    f'font-size:.72rem;padding:3px 0">Cancel</button>'
+                    f'</form>'
                 )
-            elif is_reachable:
+            else:
+                _sd         = week_date(task_start_week)
+                _iso_wk     = _sd.isocalendar()[1]
+                _sched_date = _sd.strftime("%-d %b")
                 hdr_bg, hdr_fg = "#dbeafe", "#1e40af"
-                hdr_text       = "⏳ Awaiting Initiation"
-                status_body    = '<div style="font-size:.72rem;color:#6b7280;margin-top:4px">Ready to begin</div>'
+                hdr_text       = "Pending"
+                status_body    = (
+                    f'<div style="font-size:.72rem;color:#6b7280;margin-top:4px">'
+                    f'Scheduled: W{_iso_wk} ({_sched_date})</div>'
+                )
                 action_html    = (
                     f'<form method="post" action="/projects/{pid}/tracker" class="mt-2">'
                     f'<input type="hidden" name="action" value="test_start">'
@@ -5603,17 +5633,6 @@ class ProjectTrackerHandler(Base):
                     f'font-size:.72rem;padding:3px 0">Start Test</button>'
                     f'</form>'
                 )
-            else:
-                hdr_bg, hdr_fg = "#f3f4f6", "#6b7280"
-                hdr_text       = "To be initiated"
-                _sd            = week_date(task_start_week)
-                _iso_wk        = _sd.isocalendar()[1]
-                _sched_date    = _sd.strftime("%-d %b")
-                status_body    = (
-                    f'<div style="font-size:.72rem;color:#9ca3af;margin-top:4px">'
-                    f'Scheduled: W{_iso_wk} ({_sched_date})</div>'
-                )
-                action_html = ""
 
             cond_display = (
                 f'<div style="font-size:.7rem;color:#6b7280;margin-top:2px">{cond_label}</div>'
@@ -5785,6 +5804,20 @@ class ProjectTrackerHandler(Base):
                download>
               <i class="bi bi-file-earmark-spreadsheet me-1"></i>Export Excel
             </a>
+            <div class="btn-group btn-group-sm ms-2" id="ganttModeToggle" role="group">
+              <button type="button" id="btnWeekMode"
+                onclick="switchGanttMode('week')"
+                class="btn btn-outline-secondary active"
+                style="font-size:.78rem;padding:3px 8px">
+                <i class="bi bi-calendar3-week me-1"></i>Week
+              </button>
+              <button type="button" id="btnDayMode"
+                onclick="switchGanttMode('day')"
+                class="btn btn-outline-secondary"
+                style="font-size:.78rem;padding:3px 8px">
+                <i class="bi bi-calendar3 me-1"></i>Day
+              </button>
+            </div>
           </div>
         </div>
         <!-- Edit mode hint bar -->
@@ -5921,19 +5954,6 @@ class ProjectTrackerHandler(Base):
 
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
         <script>
-        // ── Scroll chart to current week on load ──────────────────────────────────
-        document.addEventListener("DOMContentLoaded", function() {{
-          const scroller = document.getElementById("ganttScroll");
-          const nowCell  = scroller && scroller.querySelector("td[data-now='1']");
-          if (scroller && nowCell) {{
-            const cellLeft  = nowCell.offsetLeft;
-            const cellWidth = nowCell.offsetWidth;
-            const scrollWidth = scroller.clientWidth;
-            // Centre the current-week column in the viewport
-            scroller.scrollLeft = cellLeft - scrollWidth / 2 + cellWidth / 2;
-          }}
-        }});
-
         // ── Server data ───────────────────────────────────────────────────────────
         const TASK_DATA        = {_task_data_js};
         const PREP_ORDER       = {_prep_order_js};
@@ -5949,6 +5969,8 @@ class ProjectTrackerHandler(Base):
         const ANCHOR_ISO_WEEK  = {anchor_iso_week};
         const ANCHOR_YEAR      = {anchor_year};
         const CURRENT_ISO_WEEK = {current_iso_week};
+        const N_WEEKS          = {n_weeks};
+        const TODAY_DAY_IDX    = {today_day_idx};
 
         // Convert a 1-based relative week (from anchor) to an ISO week number.
         function relToIso(rel) {{
@@ -5973,6 +5995,189 @@ class ProjectTrackerHandler(Base):
           return Math.max(1, Math.floor(diffDays / 7) + 1);
         }}
 
+        // ── Week / Day mode toggle ────────────────────────────────────────────────
+        let ganttMode  = localStorage.getItem('ganttMode') || 'week';
+        let _origThead = null;
+        let _origTbody = null;
+        let _taskOrder = [];   // ordered task IDs captured from server-rendered chart body
+
+        // Per-task day fill sets (parallel to filledWeeks; days are 0-indexed from anchor Mon)
+        const filledDays = {{}};
+        // Days marked for deletion in day mode (parallel to delSel)
+        const delSelDays = new Set();
+
+        // ── Conversion helpers ────────────────────────────────────────────────────
+        function filledWeeksToDays(tid) {{
+          const fw = filledWeeks[String(tid)];
+          if (!fw || fw.size === 0) return new Set();
+          const fd = new Set();
+          fw.forEach(w => {{
+            for (let d = (w - 1) * 7; d <= (w - 1) * 7 + 6; d++) fd.add(d);
+          }});
+          return fd;
+        }}
+        function filledDaysToWeeks(tid) {{
+          const fd = filledDays[String(tid)];
+          if (!fd || fd.size === 0) return new Set();
+          const fw = new Set();
+          fd.forEach(d => fw.add(Math.floor(d / 7) + 1));
+          return fw;
+        }}
+
+        function scrollToNow() {{
+          const scroller = document.getElementById('ganttScroll');
+          if (!scroller) return;
+          const nowEl = scroller.querySelector("td[data-now='1']") ||
+                        scroller.querySelector("th[data-day='" + TODAY_DAY_IDX + "']");
+          if (nowEl) {{
+            scroller.scrollLeft = nowEl.offsetLeft - scroller.clientWidth / 2 + nowEl.offsetWidth / 2;
+          }}
+        }}
+
+        function switchGanttMode(mode) {{
+          // Sync state between modes for dirty tasks
+          if (mode === 'day' && ganttMode === 'week') {{
+            dirtyTids.forEach(tid => {{
+              filledDays[String(tid)] = filledWeeksToDays(String(tid));
+            }});
+            // Also seed filledDays for all tasks on first switch
+            Object.keys(TASK_DATA).forEach(tid => {{
+              if (!filledDays[tid]) filledDays[tid] = filledWeeksToDays(tid);
+            }});
+          }} else if (mode === 'week' && ganttMode === 'day') {{
+            dirtyTids.forEach(tid => {{
+              filledWeeks[String(tid)] = filledDaysToWeeks(String(tid));
+            }});
+            delSelDays.clear();
+          }}
+          ganttMode = mode;
+          localStorage.setItem('ganttMode', mode);
+          document.getElementById('btnWeekMode').classList.toggle('active', mode === 'week');
+          document.getElementById('btnDayMode').classList.toggle('active', mode === 'day');
+          const table = document.getElementById('ganttChartTable');
+          if (!table) return;
+          if (mode === 'week') {{
+            if (_origThead) table.querySelector('thead').innerHTML = _origThead;
+            if (_origTbody) table.querySelector('tbody').innerHTML = _origTbody;
+            // Re-render edits in week mode
+            if (editActive) ganttRenderAll();
+          }} else {{
+            buildDayChart(table);
+            if (editActive) ganttRenderAll();
+          }}
+          scrollToNow();
+        }}
+
+        function buildDayChart(table) {{
+          const nDays     = N_WEEKS * 7;
+          const DAY_NAMES = ['M','T','W','T','F','S','S'];
+
+          // ── Month header ──────────────────────────────────────────────────────
+          const monthGroups = [];
+          let curLabel = null, curSpan = 0;
+          for (let d = 0; d < nDays; d++) {{
+            const ms  = ANCHOR_EPOCH_MS + d * 86400000;
+            const lbl = new Date(ms).toLocaleString('en-US', {{month:'short', year:'numeric', timeZone:'UTC'}});
+            if (lbl === curLabel) {{ curSpan++; }}
+            else {{
+              if (curLabel) monthGroups.push({{lbl: curLabel, span: curSpan}});
+              curLabel = lbl; curSpan = 1;
+            }}
+          }}
+          if (curLabel) monthGroups.push({{lbl: curLabel, span: curSpan}});
+
+          const monthHdr = monthGroups.map(g =>
+            '<th colspan="' + g.span + '" style="padding:3px 6px;text-align:center;' +
+            'font-size:.72rem;color:#374151;font-weight:700;border-left:2px solid #d1d5db;' +
+            'white-space:nowrap">' + g.lbl + '</th>'
+          ).join('');
+
+          // ── Day header ────────────────────────────────────────────────────────
+          let dayHdr = '';
+          for (let d = 0; d < nDays; d++) {{
+            const dow     = d % 7;   // 0=Mon because anchor is always a Monday
+            const isWknd  = dow >= 5;
+            const isToday = (d === TODAY_DAY_IDX);
+            const dayNum  = new Date(ANCHOR_EPOCH_MS + d * 86400000).getUTCDate();
+            const bg      = isToday ? '#fef9c3' : isWknd ? '#ebebeb' : 'transparent';
+            const col     = isToday ? '#92400e' : '#9ca3af';
+            const fw      = isToday ? '700' : (dow === 0 ? '600' : '400');
+            const bl      = dow === 0 ? 'border-left:2px solid #d1d5db;' : 'border-left:1px solid #e5e7eb;';
+            const label   = (dow === 0) ? String(dayNum) : DAY_NAMES[dow];
+            dayHdr += '<th data-day="' + d + '" style="min-width:22px;padding:2px 1px;text-align:center;' +
+              'font-size:.62rem;color:' + col + ';font-weight:' + fw + ';background:' + bg + ';' + bl + '">' +
+              label + '</th>';
+          }}
+
+          // ── Body rows (use _taskOrder captured from original server render) ───
+          let bodyHtml = '';
+          const tids = _taskOrder.length > 0 ? _taskOrder : Object.keys(TASK_DATA);
+          tids.forEach(function(tid) {{
+            const d = TASK_DATA[tid];
+            if (!d) return;
+            // Use filledDays if available (post-edit), else derive from filledWeeks
+            const fd = filledDays[tid] || filledWeeksToDays(tid);
+            filledDays[tid] = fd;
+            const barColor = d.color;
+            let cells = '';
+            let prevFill = false;
+            for (let day = 0; day < nDays; day++) {{
+              const inRange  = fd.has(day);
+              const nextFill = fd.has(day + 1);
+              const dow      = day % 7;
+              const isWknd   = dow >= 5;
+              const isToday  = (day === TODAY_DAY_IDX);
+              const isStart  = inRange && !fd.has(day - 1);
+              const isEnd    = inRange && !nextFill;
+              const bl       = isToday  ? 'border-left:2px solid #f59e0b;'
+                             : dow === 0 ? 'border-left:2px solid #d1d5db;'
+                             : 'border-left:1px solid #e5e7eb;';
+              if (inRange) {{
+                const br = (isStart && isEnd) ? 'border-radius:4px;'
+                         : isStart ? 'border-radius:4px 0 0 4px;'
+                         : isEnd   ? 'border-radius:0 4px 4px 0;' : '';
+                cells += '<td data-tid="' + tid + '" data-day="' + day + '"' +
+                  ' style="background:' + barColor + ';' + br + bl + 'padding:0;height:26px;min-width:22px"></td>';
+              }} else {{
+                const bgCell = isToday ? '#fef9c3' : isWknd ? '#ebebeb' : '#f9fafb';
+                cells += '<td data-tid="' + tid + '" data-day="' + day + '"' +
+                  ' style="background:' + bgCell + ';' + bl + 'padding:0;height:26px;min-width:22px"></td>';
+              }}
+              prevFill = inRange;
+            }}
+            bodyHtml += '<tr data-gantt-row="' + tid + '">' + cells + '</tr>';
+          }});
+
+          table.querySelector('thead').innerHTML =
+            '<tr style="background:#f3f4f6">' + monthHdr + '</tr>' +
+            '<tr style="background:#f9fafb">' + dayHdr   + '</tr>';
+          table.querySelector('tbody').innerHTML = bodyHtml;
+        }}
+
+        // Initialise on load
+        document.addEventListener('DOMContentLoaded', function() {{
+          const table = document.getElementById('ganttChartTable');
+          if (table) {{
+            _origThead = table.querySelector('thead').innerHTML;
+            _origTbody = table.querySelector('tbody').innerHTML;
+            // Capture task order from server-rendered chart body
+            _taskOrder = Array.from(
+              table.querySelectorAll('tbody tr[data-gantt-row]')
+            ).map(r => r.dataset.ganttRow);
+          }}
+          const btnW = document.getElementById('btnWeekMode');
+          const btnD = document.getElementById('btnDayMode');
+          if (ganttMode === 'day') {{
+            if (btnW) btnW.classList.remove('active');
+            if (btnD) btnD.classList.add('active');
+            if (table) buildDayChart(table);
+          }} else {{
+            if (btnW) btnW.classList.add('active');
+            if (btnD) btnD.classList.remove('active');
+          }}
+          scrollToNow();
+        }});
+
         // ── State ─────────────────────────────────────────────────────────────────
         const filledWeeks  = {{}};
         const dirtyTids    = new Set();
@@ -5991,6 +6196,39 @@ class ProjectTrackerHandler(Base):
           for (let w = d.start_week; w < d.start_week + d.duration; w++) s.add(w);
           filledWeeks[tid] = s;
         }});
+
+        // Auto-fix constraint violations in the loaded/saved state.
+        // Runs once on page load; only triggers a cascade if a violation is found.
+        // Uses hoisted function declarations (cascadeDownstream etc.) which are safe to call here.
+        (function fixLoadedConstraints() {{
+          const precondTids = _getPrecondTids();
+          // 1. Check Preconditioning starts before prep chain end
+          const precondViolated = precondTids.some(tid => {{
+            const fw = filledWeeks[tid];
+            return fw && fw.size > 0 && Math.min(...fw) < prepChainEnd;
+          }});
+          if (precondViolated) {{ cascadeDownstream(); return; }}
+          // 2. Check other stress tasks start before preconditioning end
+          const stressEndMap = _buildStressEndMap();
+          const precondEndVal = precondTids.length
+            ? Math.max(...precondTids.map(tid => stressEndMap[tid] || prepChainEnd))
+            : prepChainEnd;
+          const stressViolated = STRESS_TASKS.some(t => {{
+            if (precondTids.includes(String(t.id))) return false;
+            const fw = filledWeeks[String(t.id)];
+            const minS = (TASK_DATA[String(t.id)] || {{}}).min_start || precondEndVal;
+            return fw && fw.size > 0 && Math.min(...fw) < minS;
+          }});
+          if (stressViolated) {{ cascadeFromPrecond(); return; }}
+          // 3. Check analysis / non-JEDEC / reporting tasks
+          const anyChildViolated = Object.entries(TASK_DATA).some(([tid, data]) => {{
+            if (!['Analysis', 'Non-JEDEC Test', 'Reporting'].includes(data.category)) return false;
+            const fw = filledWeeks[tid];
+            const minS = data.min_start || 1;
+            return fw && fw.size > 0 && Math.min(...fw) < minS;
+          }});
+          if (anyChildViolated) cascadeAnalysisAll();
+        }})();
 
         // ── n_mode / category helpers ────────────────────────────────────────────
         var CAT_N_DEFAULT = {{
@@ -6065,11 +6303,11 @@ class ProjectTrackerHandler(Base):
           const swEl = document.getElementById('add_sw');
           if (swEl) {{
             if (cat === 'Preparation') {{
-              swEl.value = relToIso(prepChainEnd + 1);
+              swEl.value = relToIso(prepChainEnd);
             }} else if (cat === 'Stress') {{
-              swEl.value = relToIso(prepChainEnd + 1);
+              swEl.value = relToIso(prepChainEnd);
             }} else if (cat === 'Reporting') {{
-              swEl.value = relToIso(reportingGate + 1);
+              swEl.value = relToIso(reportingGate);
             }} else if (cat === 'Analysis') {{
               // Will be set when parent is selected; reset to blank for now
               swEl.value = '';
@@ -6107,7 +6345,7 @@ class ProjectTrackerHandler(Base):
           const pid = sel.value;
           if (pid) {{
             const stressEnd = STRESS_END_BY_ID[String(pid)] || prepChainEnd;
-            swEl.value = relToIso(stressEnd + 1);
+            swEl.value = relToIso(stressEnd);
           }} else {{
             swEl.value = '';
           }}
@@ -6268,7 +6506,7 @@ class ProjectTrackerHandler(Base):
               const pfw = filledWeeks[String(PREP_ORDER[i-1])] || new Set();
               return pfw.size ? Math.max(...pfw) : 0;
             }})();
-            const newStart = prevEnd + 1;
+            const newStart = prevEnd;
             const fw  = filledWeeks[tid] || new Set();
             const dur = fw.size
               ? Math.max(...fw) - Math.min(...fw) + 1
@@ -6319,15 +6557,15 @@ class ProjectTrackerHandler(Base):
         function cascadeDownstream() {{
           const precondTids = _getPrecondTids();
           // 1. Preconditioning starts right after prep
-          precondTids.forEach(tid => _moveTid(tid, prepChainEnd + 1));
-          // 2. All other stress tasks start after Preconditioning ends
+          precondTids.forEach(tid => _moveTid(tid, prepChainEnd));
+          // 2. All other stress tasks may start on the same week Preconditioning ends
           const sem = _buildStressEndMap();
           const precondEnd = precondTids.length
             ? Math.max(...precondTids.map(tid => sem[tid] || prepChainEnd))
             : prepChainEnd;
           STRESS_TASKS.forEach(t => {{
             if (precondTids.includes(String(t.id))) return;
-            _moveTid(t.id, precondEnd + 1);
+            _moveTid(t.id, precondEnd);
           }});
           cascadeAnalysisAll();
         }}
@@ -6342,7 +6580,7 @@ class ProjectTrackerHandler(Base):
             : prepChainEnd;
           STRESS_TASKS.forEach(t => {{
             if (precondTids.includes(String(t.id))) return;
-            _moveTid(t.id, precondEnd + 1);
+            _moveTid(t.id, precondEnd);
           }});
           cascadeAnalysisAll();
         }}
@@ -6354,9 +6592,8 @@ class ProjectTrackerHandler(Base):
             const isPostQualNJ = d.category === 'Non-JEDEC Test' && !!d.parent_task_id;
             if (!isAnalysis && !isPostQualNJ) return;
             const parentEnd = stressEnd[String(d.parent_task_id)] ?? prepChainEnd;
-            // Non-JEDEC post-qual must start AFTER stress (base = parentEnd+1);
-            // Analysis may overlap last stress week (base = parentEnd).
-            const base = isPostQualNJ ? parentEnd + 1 : parentEnd;
+            // Both Analysis and Non-JEDEC post-qual may start on the same week/day the parent ends
+            const base = parentEnd;
             const fw = filledWeeks[String(tid)] || new Set();
             const curStart = fw.size ? Math.min(...fw) : base;
             const oldMinStart = d.min_start || base;
@@ -6388,7 +6625,7 @@ class ProjectTrackerHandler(Base):
             const isPostQualNJ = d.category === 'Non-JEDEC Test' && !!d.parent_task_id;
             if (!isAnalysis && !isPostQualNJ) return;
             if (String(d.parent_task_id) !== String(stressTid)) return;
-            const base = isPostQualNJ ? projectedEnd + 1 : projectedEnd;
+            const base = projectedEnd;
             const afw = filledWeeks[String(aTid)] || new Set();
             const dur = _fwDur(aTid);
             const curStart = afw.size ? Math.min(...afw) : base;
@@ -6416,12 +6653,102 @@ class ProjectTrackerHandler(Base):
             : prepChainEnd;
           Object.entries(TASK_DATA).forEach(([tid, d]) => {{
             if (d.category !== 'Reporting') return;
-            _moveTid(tid, newGate + 1);
+            _moveTid(tid, newGate);
+          }});
+        }}
+
+        // ── Day-mode cascade helpers ──────────────────────────────────────────────
+        function _dayEnd(tid) {{
+          const fd = filledDays[String(tid)] || new Set();
+          return fd.size ? Math.max(...fd) : -1;
+        }}
+        function _moveTidDay(tid, newStartDay) {{
+          const fd  = filledDays[String(tid)] || new Set();
+          const dur = fd.size ? Math.max(...fd) - Math.min(...fd) + 1 : 7;
+          const newFd = new Set();
+          for (let d = newStartDay; d < newStartDay + dur; d++) newFd.add(d);
+          filledDays[String(tid)] = newFd;
+          filledWeeks[String(tid)] = filledDaysToWeeks(String(tid));
+          dirtyTids.add(parseInt(tid));
+        }}
+        function _prepEndDay() {{
+          let maxDay = -1;
+          PREP_ORDER.forEach(tid => {{
+            const e = _dayEnd(String(tid));
+            if (e > maxDay) maxDay = e;
+          }});
+          return maxDay < 0 ? 0 : maxDay;
+        }}
+        function cascadeDownstreamDay() {{
+          const precondTids = _getPrecondTids();
+          const prepEnd = _prepEndDay();
+          precondTids.forEach(tid => _moveTidDay(tid, prepEnd));
+          const precondEnd = precondTids.length
+            ? Math.max(...precondTids.map(tid => _dayEnd(tid)))
+            : prepEnd;
+          STRESS_TASKS.forEach(t => {{
+            if (precondTids.includes(String(t.id))) return;
+            _moveTidDay(t.id, precondEnd);
+          }});
+          cascadeAnalysisAllDay();
+        }}
+        function cascadeFromPrecondDay() {{
+          const precondTids = _getPrecondTids();
+          const precondEnd = precondTids.length
+            ? Math.max(...precondTids.map(tid => _dayEnd(tid)))
+            : _prepEndDay();
+          STRESS_TASKS.forEach(t => {{
+            if (precondTids.includes(String(t.id))) return;
+            _moveTidDay(t.id, precondEnd);
+          }});
+          cascadeAnalysisAllDay();
+        }}
+        function cascadeAnalysisAllDay() {{
+          const stressEndDay = {{}};
+          STRESS_TASKS.forEach(t => {{
+            stressEndDay[String(t.id)] = _dayEnd(String(t.id));
+          }});
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            const isAnalysis   = d.category === 'Analysis';
+            const isPostQualNJ = d.category === 'Non-JEDEC Test' && !!d.parent_task_id;
+            if (!isAnalysis && !isPostQualNJ) return;
+            const parentEnd = stressEndDay[String(d.parent_task_id)] ?? _prepEndDay();
+            const fd = filledDays[String(tid)] || new Set();
+            const curStart = fd.size ? Math.min(...fd) : parentEnd;
+            const oldMin = d.min_start ? (d.min_start - 1) * 7 : parentEnd;
+            const offset = Math.max(0, curStart - oldMin);
+            _moveTidDay(tid, parentEnd + offset);
+          }});
+          cascadeReportingDay();
+        }}
+        function cascadeReportingDay() {{
+          const byParent = {{}};
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            if (d.category !== 'Analysis') return;
+            const pid = String(d.parent_task_id || '');
+            const end = _dayEnd(String(tid));
+            if (!byParent[pid]) byParent[pid] = [];
+            byParent[pid].push(end);
+          }});
+          const groups = Object.values(byParent);
+          const newGate = groups.length
+            ? Math.min(...groups.map(g => Math.max(...g)))
+            : _prepEndDay();
+          Object.entries(TASK_DATA).forEach(([tid, d]) => {{
+            if (d.category !== 'Reporting') return;
+            _moveTidDay(tid, newGate);
+          }});
+        }}
+        // After any week-mode cascade, sync filledDays for tasks that moved
+        function syncAllDaysFromWeeks() {{
+          Object.keys(TASK_DATA).forEach(tid => {{
+            filledDays[tid] = filledWeeksToDays(tid);
           }});
         }}
 
         // ── Render ────────────────────────────────────────────────────────────────
         function ganttRenderRow(tid) {{
+          if (ganttMode === 'day') {{ ganttRenderRowDay(tid); return; }}
           const row = document.querySelector('[data-gantt-row="' + tid + '"]');
           if (!row) return;
           const data  = TASK_DATA[String(tid)] || {{}};
@@ -6456,6 +6783,43 @@ class ProjectTrackerHandler(Base):
             cell.style.cursor     = cur;
           }});
         }}
+
+        function ganttRenderRowDay(tid) {{
+          const row = document.querySelector('[data-gantt-row="' + tid + '"]');
+          if (!row) return;
+          const data  = TASK_DATA[String(tid)] || {{}};
+          const fd    = filledDays[String(tid)] || new Set();
+          const col   = data.color || '#9ca3af';
+          const isSel = String(tid) === String(selTid);
+          row.querySelectorAll('td').forEach(cell => {{
+            const day = parseInt(cell.dataset.day);
+            if (isNaN(day)) return;
+            const isFill  = fd.has(day);
+            const isToday = (day === TODAY_DAY_IDX);
+            const dow     = day % 7;
+            const isWknd  = dow >= 5;
+            const inDelSel = isSel && delSelDays.has(day);
+            let inFill = false, inDel = false;
+            if (drag && drag.dayMode && String(drag.tid) === String(tid) && drag.mode) {{
+              const lo = Math.min(drag.startD, drag.curD);
+              const hi = Math.max(drag.startD, drag.curD);
+              if (day >= lo && day <= hi) {{
+                inFill = drag.mode === 'fill';
+                inDel  = drag.mode === 'delete';
+              }}
+            }}
+            let bg, cur;
+            if      (inFill)              {{ bg = '#93c5fd'; cur = 'crosshair'; }}
+            else if (inDel || inDelSel)   {{ bg = '#fca5a5'; cur = 'pointer'; }}
+            else if (isFill)              {{ bg = col; cur = editActive && isSel ? 'pointer' : 'default'; }}
+            else if (isToday)             {{ bg = '#fef9c3'; cur = editActive && isSel ? 'crosshair' : 'default'; }}
+            else                          {{ bg = isSel && editActive ? '#ede9fe' : isWknd ? '#ebebeb' : '#f9fafb';
+                                            cur = editActive && isSel ? 'crosshair' : 'default'; }}
+            cell.style.background = bg;
+            cell.style.cursor     = cur;
+          }});
+        }}
+
         function ganttRenderAll() {{
           Object.keys(TASK_DATA).forEach(tid => ganttRenderRow(tid));
         }}
@@ -6468,38 +6832,52 @@ class ProjectTrackerHandler(Base):
             const cell = e.target.closest('[data-tid]');
             if (!cell) return;
             const cellTid = String(cell.dataset.tid);
-            // Auto-switch active row to whichever cell was clicked
             if (cellTid !== String(selTid)) {{
               if (selTid !== null) {{
                 const prev = document.getElementById('tr-' + selTid);
                 if (prev) prev.style.background = '';
               }}
-              delSel.clear(); ganttUpdateDelBtn();
+              delSel.clear(); delSelDays.clear(); ganttUpdateDelBtn();
               selTid = cellTid;
               const row = document.getElementById('tr-' + selTid);
               if (row) row.style.background = '#fef3c7';
               ganttRenderAll();
             }}
             e.preventDefault();
-            const w = parseInt(cell.dataset.week);
-            drag = {{tid: selTid, startW: w, curW: w, mode: null}};
+            if (ganttMode === 'day') {{
+              const day = parseInt(cell.dataset.day);
+              drag = {{tid: selTid, startD: day, curD: day, mode: null, dayMode: true}};
+            }} else {{
+              const w = parseInt(cell.dataset.week);
+              drag = {{tid: selTid, startW: w, curW: w, mode: null, dayMode: false}};
+            }}
             ganttRenderRow(selTid);
           }});
           chartTable.addEventListener('mousemove', e => {{
             if (!drag) return;
             const cell = e.target.closest('[data-tid]');
             if (!cell) return;
-            const w = parseInt(cell.dataset.week);
-            if (drag.mode === null && w !== drag.startW)
-              drag.mode = w > drag.startW ? 'fill' : 'delete';
-            if (w !== drag.curW) {{
-              drag.curW = w;
-              const dragData = TASK_DATA[String(drag.tid)] || {{}};
-              if (dragData.category === 'Stress' && drag.mode !== null) {{
-                previewStressCascade(drag.tid);
-                ganttRenderAll();
-              }} else {{
+            if (drag.dayMode) {{
+              const day = parseInt(cell.dataset.day);
+              if (drag.mode === null && day !== drag.startD)
+                drag.mode = day > drag.startD ? 'fill' : 'delete';
+              if (day !== drag.curD) {{
+                drag.curD = day;
                 ganttRenderRow(drag.tid);
+              }}
+            }} else {{
+              const w = parseInt(cell.dataset.week);
+              if (drag.mode === null && w !== drag.startW)
+                drag.mode = w > drag.startW ? 'fill' : 'delete';
+              if (w !== drag.curW) {{
+                drag.curW = w;
+                const dragData = TASK_DATA[String(drag.tid)] || {{}};
+                if (dragData.category === 'Stress' && drag.mode !== null) {{
+                  previewStressCascade(drag.tid);
+                  ganttRenderAll();
+                }} else {{
+                  ganttRenderRow(drag.tid);
+                }}
               }}
             }}
           }});
@@ -6514,6 +6892,49 @@ class ProjectTrackerHandler(Base):
 
         function ganttCommitDrag() {{
           if (!drag) return;
+
+          // ── Day mode commit ────────────────────────────────────────────────────
+          if (drag.dayMode) {{
+            const tid  = String(drag.tid);
+            const data = TASK_DATA[tid] || {{}};
+            const fd   = filledDays[tid] || new Set();
+            const lo   = Math.min(drag.startD, drag.curD);
+            const hi   = Math.max(drag.startD, drag.curD);
+            const mode = drag.mode || (fd.has(drag.startD) ? 'delete' : 'fill');
+
+            if (!drag.mode && lo === hi && fd.has(lo) && delSelDays.has(lo)) {{
+              delSelDays.delete(lo);
+              ganttUpdateDelBtn(); ganttRenderRow(tid); drag = null; return;
+            }}
+            if (mode === 'fill') {{
+              pushUndoState();
+              for (let d = lo; d <= hi; d++) fd.add(d);
+              // Snap contiguous
+              if (fd.size >= 2) {{
+                const dlo = Math.min(...fd), dhi = Math.max(...fd);
+                for (let d = dlo; d <= dhi; d++) fd.add(d);
+              }}
+              filledDays[tid] = fd;
+              filledWeeks[tid] = filledDaysToWeeks(tid);
+              dirtyTids.add(parseInt(tid));
+              if (data.category === 'Preparation') {{
+                cascadeDownstreamDay();
+              }} else if (data.category === 'Stress') {{
+                if (_getPrecondTids().includes(tid)) cascadeFromPrecondDay();
+                else cascadeAnalysisAllDay();
+              }} else if (data.category === 'Analysis') {{
+                cascadeReportingDay();
+              }}
+              ganttRenderAll();
+            }} else {{
+              for (let d = lo; d <= hi; d++) {{ if (fd.has(d)) delSelDays.add(d); }}
+              ganttUpdateDelBtn(); ganttRenderRow(tid);
+            }}
+            drag = null;
+            return;
+          }}
+
+          // ── Week mode commit ───────────────────────────────────────────────────
           const tid  = String(drag.tid);
           const data = TASK_DATA[tid] || {{}};
           const fw   = filledWeeks[tid] || new Set();
@@ -6557,6 +6978,7 @@ class ProjectTrackerHandler(Base):
             }} else if (data.category === 'Analysis') {{
               cascadeReporting();
             }}
+            syncAllDaysFromWeeks();
             ganttRenderAll();
           }} else {{
             for (let w = lo; w <= hi; w++) {{ if (fw.has(w)) delSel.add(w); }}
@@ -6607,11 +7029,11 @@ class ProjectTrackerHandler(Base):
               }} else {{
                 cascadeAnalysisAll();
               }}
-              ganttRenderAll();
+              syncAllDaysFromWeeks(); ganttRenderAll();
             }} else if (data.category === 'Analysis') {{
-              cascadeReporting(); ganttRenderAll();
+              cascadeReporting(); syncAllDaysFromWeeks(); ganttRenderAll();
             }} else {{
-              ganttRenderRow(tid);
+              syncAllDaysFromWeeks(); ganttRenderRow(tid);
             }}
           }}
           dirtyTids.add(parseInt(tid));
@@ -6634,20 +7056,50 @@ class ProjectTrackerHandler(Base):
           }}
           const tag = document.activeElement ? document.activeElement.tagName : '';
           const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-          if ((e.key === 'Delete' || e.key === 'Backspace') && editActive && delSel.size > 0 && !inInput) {{
-            e.preventDefault(); ganttDeleteSel();
+          if ((e.key === 'Delete' || e.key === 'Backspace') && editActive && !inInput) {{
+            if (ganttMode === 'day' && delSelDays.size > 0) {{ e.preventDefault(); ganttDeleteSelDays(); }}
+            else if (ganttMode === 'week' && delSel.size > 0) {{ e.preventDefault(); ganttDeleteSel(); }}
           }}
           if (e.key === 'Enter' && editActive && drag && drag.mode === 'fill' && !inInput) {{
             e.preventDefault(); ganttCommitDrag();
           }}
         }});
 
+        // ── Day-mode delete ───────────────────────────────────────────────────────
+        function ganttDeleteSelDays() {{
+          if (!selTid) return;
+          pushUndoState();
+          const tid = String(selTid);
+          const fd  = filledDays[tid] || new Set();
+          const allDays = [...fd].sort((a,b) => a-b);
+          if (allDays.length > 0) {{
+            let lo = allDays[0], hi = allDays[allDays.length-1];
+            while (delSelDays.has(lo) && lo <= hi) lo++;
+            while (delSelDays.has(hi) && hi >= lo) hi--;
+            const newFd = new Set();
+            if (lo <= hi) for (let d = lo; d <= hi; d++) newFd.add(d);
+            filledDays[tid] = newFd;
+            filledWeeks[tid] = filledDaysToWeeks(tid);
+          }}
+          delSelDays.clear(); ganttUpdateDelBtn();
+          dirtyTids.add(parseInt(tid));
+          ganttRenderAll();
+        }}
+
         // ── Save ──────────────────────────────────────────────────────────────────
         function ganttSave() {{
-          if (delSel.size > 0) ganttDeleteSel();
+          if (ganttMode === 'day' && delSelDays.size > 0) ganttDeleteSelDays();
+          else if (ganttMode === 'week' && delSel.size > 0) ganttDeleteSel();
           const changes = [];
           dirtyTids.forEach(tid => {{
-            const fw = filledWeeks[String(tid)];
+            // In day mode, convert filledDays → weeks before saving
+            let fw;
+            if (ganttMode === 'day') {{
+              fw = filledDaysToWeeks(String(tid));
+              filledWeeks[String(tid)] = fw;
+            }} else {{
+              fw = filledWeeks[String(tid)];
+            }}
             if (!fw || fw.size === 0) return;
             const sw = Math.min(...fw), ew = Math.max(...fw);
             changes.push({{id: tid, start_week: sw, duration: ew - sw + 1}});
