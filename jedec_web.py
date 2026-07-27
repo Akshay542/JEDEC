@@ -4861,6 +4861,10 @@ def _compute_seeded_tasks(sample_counts: dict,
         ("SCD Bonding + CSAM",
             "Preparation", "", cw(total / 4)),   # 1 day per 4 samples
     ]
+    if is_ttv:
+        # TTV Calibration: 10 TTVs/week (2/working day); all units must be calibrated
+        ttv_cal_dur = max(1, math.ceil(total / 10))
+        prep.append(("TTV Calibration", "Preparation", "", ttv_cal_dur))
     for name, cat, key, dur in prep:
         result.append({"task_name": name, "category": cat, "test_key": key,
                         "start_week": sw, "duration": dur})
@@ -4914,20 +4918,25 @@ def _compute_seeded_tasks(sample_counts: dict,
 
     pairs = [
         ("uHAST",      "uhast",  1, "Post-uHAST CSAM",   "Post-uHAST Testing",   "uhast",  cw(n("uhast"))),
-        ("TC",         "tc",     6, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
+        ("TC",         "tc",     3, "Post-TC CSAM",      "Post-TC Testing",      "tc",     cw(n("tc"))),
         ("T-Shock",    "tshock", 1, "Post-T-Shock CSAM", "Post-T-Shock Testing", "tshock", cw(n("tshock"))),
         ("M-Shock",    "mshock", 1, "Post-M-Shock CSAM", "Post-M-Shock Testing", "mshock", cw(n("mshock"))),
         ("Vibration",  "vib",    1, "Post-Vib CSAM",     "Post-Vib Testing",     "vib",    cw(n("vib"))),
         ("HTS",        "hts",    6, "Post-HTS CSAM",     "Post-HTS Testing",     "hts",    cw(n("hts"))),
     ]
-    # Power Cycling is applicable to Active and TTV, not Die
+    # Power Cycling and Shadow Moiré apply to Active and TTV, not Die
     if is_ttv:
         pairs.append(
-            ("Pwr Cycling", "pc", 2, "Post-PC CSAM", "Post-PC Testing", "pc", cw(n("pc")))
+            ("Pwr Cycling",  "pc",           2, "Post-PC CSAM",    "Post-PC Testing",    "pc",           cw(n("pc")))
+        )
+        pairs.append(
+            # Shadow Moiré: characterization only — no CSAM or functional post-step
+            ("Shadow Moiré", "shadow_moire", 1, "",                "",                   "shadow_moire", 0)
         )
 
-    # Standard stress tests start after Preconditioning [2wk]
-    other_stress_start = stress_start + 2
+    # Standard stress tests may start on the last week of Preconditioning (≥ X overlap rule)
+    # Preconditioning duration = 2, so its last week is stress_start + 2 - 1 = stress_start + 1
+    other_stress_start = stress_start + 1
 
     for (sname, skey, sdur, pcsam_name, ptest_name, tkey, ptest_dur) in pairs:
         stress_idx = len(result)          # remember position of this stress task
@@ -6174,7 +6183,11 @@ class ProjectTrackerHandler(Base):
           }} else {{
             if (btnW) btnW.classList.add('active');
             if (btnD) btnD.classList.remove('active');
+            // Re-render bars from JS state (filledWeeks may have been corrected
+            // by fixLoadedConstraints before this handler ran).
+            ganttRenderAll();
           }}
+          dirtyTids.clear();   // constraint auto-fixes are not "unsaved user edits"
           scrollToNow();
         }});
 

@@ -124,7 +124,11 @@ def init_db():
             "ALTER TABLE project_gantt ADD COLUMN n_custom INTEGER DEFAULT NULL",
             "ALTER TABLE project_gantt ADD COLUMN parent_task_id INTEGER DEFAULT NULL",
             # Rename Preconditioning test_key from 'pc' (clashes with Power Cycling) to 'precond'
-            "UPDATE project_gantt SET test_key='precond' WHERE test_key='pc' AND category='Stress'",
+            # Only rename the actual Preconditioning task by name (not Power Cycling stress tasks)
+            "UPDATE project_gantt SET test_key='precond' WHERE test_key='pc' AND category='Stress' AND task_name='Preconditioning'",
+            # Compensating migration: undo incorrect renames of non-Preconditioning Stress rows
+            # (old broad migration may have renamed Pwr Cycling stress tasks to 'precond')
+            "UPDATE project_gantt SET test_key='pc' WHERE test_key='precond' AND category='Stress' AND task_name!='Preconditioning'",
             """CREATE TABLE IF NOT EXISTS project_nonjec_prescreen (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

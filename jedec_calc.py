@@ -247,7 +247,7 @@ TESTS = {
         "full_name": "Temperature Cycling",
         "standard": "JESD22-A104F.01",
         "condition": "-55°C to +150°C (Condition H)",
-        "duration": "1000 cycles at 2 cycles/hr (~21 days)",
+        "duration": "500 cycles at 2 cycles/hr (~10.5 days, ~3 weeks)",
         "sample_size": 5,
         "pass_criteria": "CSAM ≥95% bond area; Functionality: sensor reading within 5% of original (no heating); Thermal: sensor reading within 5% of original (with heating)",
         "pre_testing": "CSAM + Func + Thermal",
